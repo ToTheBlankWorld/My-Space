@@ -1,0 +1,48 @@
+{
+  "name": "@space/web",
+  "version": "0.1.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "scripts": {
+    "dev": "next dev --port 3000",
+    "build": "next build",
+    "start": "next start --port 3000",
+    "lint": "eslint .",
+    "typecheck": "tsc --noEmit",
+    "test:e2e": "playwright test",
+    "test:e2e:ui": "playwright test --ui",
+    "clean": "rimraf .next .turbo"
+  },
+  "dependencies": {
+    "@space/auth": "workspace:*",
+    "@space/config": "workspace:*",
+    "@space/database": "workspace:*",
+    "@space/logger": "workspace:*",
+    "@space/time": "workspace:*",
+    "@space/types": "workspace:*",
+    "@space/ui": "workspace:*",
+    "@space/validation": "workspace:*",
+    "better-auth": "1.7.3",
+    "geist": "^1.7.2",
+    "lucide-react": "^1.43.0",
+    "motion": "^13.2.0",
+    "next": "catalog:",
+    "react": "catalog:",
+    "react-dom": "catalog:",
+    "server-only": "^0.0.1"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.63.0",
+    "@space/eslint-config": "workspace:*",
+    "@space/typescript-config": "workspace:*",
+    "@tailwindcss/postcss": "catalog:",
+    "@types/node": "catalog:",
+    "@types/react": "catalog:",
+    "@types/react-dom": "catalog:",
+    "eslint": "catalog:",
+    "rimraf": "^6.0.1",
+    "tailwindcss": "catalog:",
+    "typescript": "catalog:"
+  }
+}

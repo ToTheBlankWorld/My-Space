@@ -1,0 +1,32 @@
+{
+  "name": "@space/eslint-config",
+  "version": "0.0.0",
+  "private": true,
+  "license": "UNLICENSED",
+  "type": "module",
+  "exports": {
+    "./base": "./base.js",
+    "./node": "./node.js",
+    "./react": "./react.js",
+    "./next": "./next.js"
+  },
+  "files": [
+    "base.js",
+    "node.js",
+    "react.js",
+    "next.js"
+  ],
+  "devDependencies": {
+    "eslint": "catalog:",
+    "typescript": "catalog:"
+  },
+  "dependencies": {
+    "@eslint/js": "^10.0.1",
+    "@next/eslint-plugin-next": "^16.3.4",
+    "eslint-config-prettier": "^10.1.8",
+    "eslint-plugin-react-hooks": "^7.1.1",
+    "eslint-plugin-turbo": "^2.10.12",
+    "globals": "^17.12.0",
+    "typescript-eslint": "^8.70.0"
+  }
+}

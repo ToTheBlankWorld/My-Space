@@ -1,0 +1,44 @@
+{
+  "name": "space",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Space \u2014 an autonomous personal planning platform.",
+  "packageManager": "pnpm@9.15.4",
+  "engines": {
+    "node": ">=22.11.0",
+    "pnpm": ">=9.15.0"
+  },
+  "scripts": {
+    "build": "turbo run build",
+    "build:web": "turbo run build --filter=@space/web",
+    "build:worker": "turbo run build --filter=@space/worker",
+    "clean": "turbo run clean",
+    "db:generate": "turbo run db:generate",
+    "db:migrate": "pnpm --filter @space/database db:migrate",
+    "db:migrate:deploy": "pnpm --filter @space/database db:migrate:deploy",
+    "db:migrate:status": "pnpm --filter @space/database db:migrate:status",
+    "db:seed": "pnpm --filter @space/database db:seed",
+    "db:studio": "pnpm --filter @space/database db:studio",
+    "dev": "turbo run dev",
+    "dev:web": "turbo run dev --filter=@space/web",
+    "dev:worker": "turbo run dev --filter=@space/worker",
+    "format": "prettier --write .",
+    "format:check": "prettier --check .",
+    "lint": "turbo run lint",
+    "start:worker": "pnpm --filter=@space/worker start",
+    "test": "turbo run test",
+    "test:e2e": "pnpm --filter=@space/web test:e2e",
+    "test:integration": "pnpm --filter @space/database test:integration",
+    "test:watch": "turbo run test:watch",
+    "typecheck": "turbo run typecheck"
+  },
+  "devDependencies": {
+    "@space/eslint-config": "workspace:*",
+    "@space/typescript-config": "workspace:*",
+    "eslint": "catalog:",
+    "prettier": "catalog:",
+    "prettier-plugin-tailwindcss": "^0.8.1",
+    "turbo": "catalog:",
+    "typescript": "catalog:"
+  }
+}

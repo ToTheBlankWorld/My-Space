@@ -1,0 +1,38 @@
+# Local development services.
+#
+# Nothing in the application requires Docker: the web app and the worker both
+# boot without a database. This file exists so that anyone who wants to run
+# migrations, the seed, or the integration test suite can get a PostgreSQL that
+# matches production in one command.
+#
+#   docker compose up -d postgres
+#   cp packages/database/.env.example packages/database/.env
+#   pnpm db:migrate:deploy && pnpm db:seed
+#
+# Production uses Supabase PostgreSQL. This container is a local stand-in only —
+# the credentials below are deliberately trivial and must never be used anywhere
+# a network can reach.
+
+services:
+  postgres:
+    image: postgres:17-alpine
+    container_name: space-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: space
+      POSTGRES_PASSWORD: space
+      POSTGRES_DB: space_dev
+      # Keeps index and sort behaviour deterministic across machines.
+      POSTGRES_INITDB_ARGS: '--locale=C --encoding=UTF8'
+    ports:
+      - '5432:5432'
+    volumes:
+      - postgres-data:/var/lib/postgresql/data
+    healthcheck:
+      test: ['CMD-SHELL', 'pg_isready -U space -d space_dev']
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+volumes:
+  postgres-data:

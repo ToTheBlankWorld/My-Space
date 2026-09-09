@@ -1,0 +1,986 @@
+// =============================================================================
+// Space — persistence schema
+//
+// Conventions that hold for every model in this file:
+//
+//   * Identifiers are cuid2. They are unguessable, k-sortable enough for
+//     cursor pagination, and safe to expose in a URL.
+//   * Every column that represents an *instant* is `Timestamptz(3)`. PostgreSQL
+//     stores it in UTC and returns it with an offset, so no reader can
+//     accidentally reinterpret it in the server's local zone.
+//   * A column that represents a *calendar date* (the day a Space belongs to) is
+//     `@db.Date`. It has no time and no offset, because a day is not an instant.
+//   * A column that represents a *time of day* is an integer count of minutes
+//     since local midnight, not a timestamp: "remind me at 08:30" must survive a
+//     DST change and a move between timezones.
+//   * User-owned rows carry `userId` and cascade on user deletion, so erasing an
+//     account erases their data in one statement.
+//   * Enums mirror `@space/types` exactly. A drift test asserts this.
+// =============================================================================
+
+generator client {
+  provider     = "prisma-client"
+  output       = "../src/generated/prisma"
+  moduleFormat = "esm"
+  runtime      = "nodejs"
+}
+
+// Prisma 7 moved connection URLs out of the schema. They live in
+// `prisma.config.ts` for the CLI, and are supplied to `PrismaClient` through a
+// driver adapter at runtime — so a connection string is never baked into a
+// generated artefact.
+datasource db {
+  provider = "postgresql"
+}
+
+// -----------------------------------------------------------------------------
+// Enums
+// -----------------------------------------------------------------------------
+
+enum UserStatus {
+  ACTIVE
+  SUSPENDED
+  DELETED
+}
+
+enum AutonomyLevel {
+  SUGGEST_ONLY
+  ASK_BEFORE_CHANGING
+  AUTOMATICALLY_MANAGE
+}
+
+enum SchedulingStrategy {
+  EARLIEST_FIT
+  BALANCED
+  DEADLINE_FIRST
+}
+
+enum Weekday {
+  MONDAY
+  TUESDAY
+  WEDNESDAY
+  THURSDAY
+  FRIDAY
+  SATURDAY
+  SUNDAY
+}
+
+enum SpaceStatus {
+  DRAFT
+  ACTIVE
+  COMPLETED
+  ARCHIVED
+}
+
+enum SpaceItemKind {
+  TASK
+  REMINDER
+  CALENDAR_EVENT
+}
+
+enum TaskPriority {
+  CRITICAL
+  HIGH
+  NORMAL
+  LOW
+}
+
+enum TaskStatus {
+  INBOX
+  PLANNED
+  IN_PROGRESS
+  COMPLETED
+  CANCELLED
+  MISSED
+  RESCHEDULED
+}
+
+enum ReminderStatus {
+  PENDING
+  COMPLETED
+  CANCELLED
+  MISSED
+}
+
+enum DeliveryState {
+  PENDING
+  QUEUED
+  SENT
+  FAILED
+  SKIPPED
+}
+
+enum RecurrenceFrequency {
+  DAILY
+  WEEKLY
+  MONTHLY
+  YEARLY
+}
+
+enum GoalStatus {
+  ACTIVE
+  ACHIEVED
+  PAUSED
+  ABANDONED
+}
+
+enum CalendarProvider {
+  GOOGLE
+}
+
+enum ConnectionStatus {
+  CONNECTED
+  DISCONNECTED
+  ERROR
+}
+
+enum CalendarEventStatus {
+  CONFIRMED
+  TENTATIVE
+  CANCELLED
+}
+
+enum SyncState {
+  SYNCED
+  PENDING_PUSH
+  PENDING_PULL
+  CONFLICT
+  FAILED
+}
+
+enum NotificationType {
+  DAILY_PLAN
+  TASK_REMINDER
+  DEADLINE_WARNING
+  SCHEDULE_CHANGE
+  SYSTEM
+}
+
+enum NotificationPriority {
+  CRITICAL
+  IMPORTANT
+  NORMAL
+  SILENT
+}
+
+enum EmailStatus {
+  QUEUED
+  SENT
+  DELIVERED
+  BOUNCED
+  FAILED
+}
+
+enum AgentActionType {
+  SPACE_PLANNED
+  TASK_SCHEDULED
+  TASK_RESCHEDULED
+  TASK_DEFERRED
+  CONFLICT_RESOLVED
+  WORKLOAD_BALANCED
+  DEADLINE_ENFORCED
+  CALENDAR_RECONCILED
+  NOTIFICATION_DISPATCHED
+}
+
+enum AgentActionOutcome {
+  SUCCEEDED
+  FAILED
+  SKIPPED
+}
+
+enum EventType {
+  SPACE_CREATED
+  SPACE_UPDATED
+  SPACE_OPTIMIZED
+  TASK_CREATED
+  TASK_UPDATED
+  TASK_COMPLETED
+  TASK_MISSED
+  TASK_RESCHEDULED
+  REMINDER_CREATED
+  REMINDER_TRIGGERED
+  DEADLINE_APPROACHING
+  GOAL_CREATED
+  GOAL_ACHIEVED
+  CALENDAR_CHANGED
+  NOTIFICATION_SENT
+}
+
+enum AggregateType {
+  USER
+  SPACE
+  TASK
+  REMINDER
+  GOAL
+  CALENDAR_EVENT
+  NOTIFICATION
+}
+
+// -----------------------------------------------------------------------------
+// Identity
+// -----------------------------------------------------------------------------
+
+/// An account.
+///
+/// Deliberately minimal: Stage 3 adds Google OAuth, which will introduce a
+/// separate `Account` table for provider identities and encrypted tokens. Keeping
+/// credentials out of `User` now means that table can arrive without reshaping
+/// the row every other model points at.
+model User {
+  id String @id @default(cuid(2))
+
+  /// Stored lower-cased; `emailSchema` normalises before it reaches the database.
+  /// It is a *lookup key and a contact address*, not the identity: the identity
+  /// is `id`, and a user may change email or link a second provider later.
+  email String @unique
+  /// Owned by the authentication library, set from the provider's verified claim.
+  emailVerified Boolean @default(false)
+  name          String?
+  imageUrl      String?
+
+status     UserStatus @default(ACTIVE)
+  lastSeenAt DateTime?  @db.Timestamptz(3)
+  /// Null until the user finishes onboarding. Preferences exist afterwards,
+  /// so this is the single flag the application shell checks.
+  onboardingCompletedAt DateTime? @db.Timestamptz(3)
+
+  /// Bcrypt hash, written only by the deterministic end-to-end test sign-in.
+  /// Unused in production: `@space/auth` has email/password disabled unless
+  /// `E2E_AUTH_ENABLED` is set, which the environment schema refuses when
+  /// `NODE_ENV=production`. Present because better-auth's email/password
+  /// provider stores the hash on the user row.
+  password String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+  /// Set when an account is soft-deleted; rows are purged by a later job.
+  deletedAt DateTime? @db.Timestamptz(3)
+
+  accounts Account[]
+  sessions Session[]
+
+  preferences         UserPreferences?
+  planningPreferences PlanningPreferences?
+  workingHours        WorkingHoursBlock[]
+  spaces              Space[]
+  spaceItems          SpaceItem[]
+  tasks               Task[]
+  reminders           Reminder[]
+  goals               Goal[]
+  calendarConnections CalendarConnection[]
+  calendars           Calendar[]
+  calendarEvents      CalendarEvent[]
+  notifications       Notification[]
+  emailLogs           EmailLog[]
+  agentActions        AgentAction[]
+  events              EventLog[]
+  productivity        ProductivitySnapshot[]
+
+  @@index([status, createdAt])
+  @@map("users")
+}
+
+/// Presentation and communication preferences.
+///
+/// One row per user, split from `User` because it is read on a different cadence
+/// (every scheduling pass) than identity data.
+model UserPreferences {
+  id     String @id @default(cuid(2))
+  userId String @unique
+
+  /// IANA identifier, e.g. `Europe/Lisbon`. The single anchor for every calendar
+  /// date this user sees. Never inferred from the server.
+  timeZone String
+  locale   String @default("en")
+
+  /// Times of day, in minutes since local midnight (0-1439).
+  morningNotificationMinute Int?
+  middayNotificationMinute  Int?
+  eveningNotificationMinute Int?
+
+  notificationsEnabled      Boolean @default(true)
+  emailNotificationsEnabled Boolean @default(true)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("user_preferences")
+}
+
+/// Inputs the deterministic Space Engine will read when it plans a day.
+///
+/// Separate from `UserPreferences` because these are engine parameters rather
+/// than user-interface settings, and Stage 3 will version them independently.
+model PlanningPreferences {
+  id     String @id @default(cuid(2))
+  userId String @unique
+
+  defaultTaskDurationMinutes Int                @default(30)
+  /// When the user prefers the day to be planned, in minutes since local midnight.
+  preferredPlanningMinute    Int?
+  schedulingStrategy         SchedulingStrategy @default(BALANCED)
+  autonomyLevel              AutonomyLevel      @default(ASK_BEFORE_CHANGING)
+  maxDailyFocusMinutes       Int                @default(360)
+  minBreakMinutes            Int                @default(10)
+  /// Padding inserted around scheduled blocks.
+  bufferMinutes              Int                @default(5)
+  allowWeekendScheduling     Boolean            @default(false)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@map("planning_preferences")
+}
+
+/// One block of availability on one weekday.
+///
+/// Relational rather than a JSON blob: the Scheduling Engine will join against
+/// availability, and "find me the users free at 14:00 on a Tuesday" must be a
+/// query, not an application-level scan.
+model WorkingHoursBlock {
+  id     String @id @default(cuid(2))
+  userId String
+
+  weekday Weekday
+  /// Minutes since local midnight; `startMinute` < `endMinute` is enforced in
+  /// the database by a CHECK constraint added in the initial migration.
+  startMinute Int
+  endMinute   Int
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, weekday, startMinute])
+  @@index([userId, weekday])
+  @@map("working_hours_blocks")
+}
+
+// -----------------------------------------------------------------------------
+// Authentication
+//
+// These three models are owned by `@space/auth` (better-auth). Field names match
+// what the library expects, so no mapping layer stands between the library and
+// the database; `imageUrl` is the single exception and is mapped in the auth
+// configuration.
+//
+// Nothing else in the application reads them. Application code resolves the
+// session through `@space/auth` and then works with `User.id`.
+// -----------------------------------------------------------------------------
+
+/// A provider identity linked to an account.
+///
+/// One user may hold several: Google today, another provider later, without the
+/// user row changing. `(providerId, accountId)` is the provider's own identifier
+/// for the person and is what a returning sign-in is matched on — never the
+/// email address, which a user can change at the provider.
+///
+/// The token columns hold AEAD ciphertext, never plaintext. Encryption and
+/// decryption happen in the database adapter inside `@space/auth`, so the
+/// library and the application both see plaintext and the database never does.
+model Account {
+  id String @id @default(cuid(2))
+
+  /// The provider's stable subject identifier (Google's `sub`).
+  accountId  String
+  /// `google`, and later other providers.
+  providerId String
+  userId     String
+
+  /// Encrypted. Format: `spc.v1.<keyId>.<nonce>.<ciphertext>.<tag>`.
+  accessToken           String?
+  refreshToken          String?
+  idToken               String?
+  accessTokenExpiresAt  DateTime? @db.Timestamptz(3)
+  refreshTokenExpiresAt DateTime? @db.Timestamptz(3)
+  /// Scopes actually granted, so a later stage can tell whether calendar access
+  /// was consented to without asking Google.
+  scope                 String?
+  /// Unused: this deployment has no password sign-in. Present because the
+  /// library's schema defines it.
+  password              String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// One row per provider identity. Re-authorising updates in place rather than
+  /// accumulating duplicate identities for the same person.
+  @@unique([providerId, accountId])
+  @@index([userId])
+  @@map("accounts")
+}
+
+/// A server-side session.
+///
+/// The browser holds only the opaque `token` in a signed, HttpOnly cookie; every
+/// request resolves it against this table. That is what makes revocation real:
+/// deleting the row ends the session immediately, which a self-contained JWT
+/// could not do.
+model Session {
+  id String @id @default(cuid(2))
+
+  /// The opaque secret presented by the cookie. Unique so a lookup is one index hit.
+  token     String   @unique
+  userId    String
+  expiresAt DateTime @db.Timestamptz(3)
+
+  /// Recorded for the user's own "where am I signed in" view and for abuse
+  /// investigation. Deliberately the only request metadata kept.
+  ipAddress String?
+  userAgent String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// "Sign out everywhere", and the sweep that deletes expired sessions.
+  @@index([userId])
+  @@index([expiresAt])
+  @@map("sessions")
+}
+
+/// Short-lived verification values, including OAuth state.
+///
+/// Storing OAuth state server-side rather than only in a cookie means the
+/// callback can prove the request began here even if the cookie is lost, and a
+/// used state can be consumed exactly once.
+///
+/// Not linked to a user: rows exist before an identity is known.
+model Verification {
+  id String @id @default(cuid(2))
+
+  identifier String
+  value      String
+  expiresAt  DateTime @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  @@index([identifier])
+  /// Lets the expiry sweep find dead rows without scanning the table.
+  @@index([expiresAt])
+  @@map("verifications")
+}
+
+// -----------------------------------------------------------------------------
+// The Space
+// -----------------------------------------------------------------------------
+
+/// A user's plan for one calendar date.
+///
+/// `date` is a `date` column, not a timestamp. A Space is "Tuesday the 29th for
+/// this user", which is a different span of instants depending on the timezone —
+/// storing it as an instant would let a server in another region shift the whole
+/// plan by a day.
+///
+/// `timeZone` is captured on the row rather than read from the user's current
+/// preference, so that changing timezone next month does not silently
+/// re-interpret every Space already planned.
+model Space {
+  id     String @id @default(cuid(2))
+  userId String
+
+  date     DateTime    @db.Date
+  timeZone String
+  status   SpaceStatus @default(DRAFT)
+  summary  String?
+
+  /// When the engine last produced a plan for this day, and how long it took.
+  plannedAt     DateTime? @db.Timestamptz(3)
+  optimizedAt   DateTime? @db.Timestamptz(3)
+  /// Incremented on every successful optimisation pass; lets the UI detect staleness.
+  planVersion   Int       @default(0)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user           User            @relation(fields: [userId], references: [id], onDelete: Cascade)
+  items          SpaceItem[]
+  tasks          Task[]
+  reminders      Reminder[]
+  calendarEvents CalendarEvent[]
+  agentActions   AgentAction[]
+
+  /// One canonical Space per user per day. This is the core invariant of the
+  /// product: a day has exactly one plan.
+  @@unique([userId, date])
+  /// Serves "my last 30 days" and "the week ahead": a range scan on one user.
+  @@index([userId, date(sort: Desc)])
+  @@index([userId, status])
+  @@map("spaces")
+}
+
+/// The ordered contents of a Space.
+///
+/// This is an *index* over the concrete rows, not a polymorphic table: exactly
+/// one of `taskId`, `reminderId` or `calendarEventId` is set, enforced by a
+/// CHECK constraint in the initial migration. Typed foreign keys keep referential
+/// integrity, while one row per item gives the Space a single deterministic
+/// ordering across mixed kinds without a three-way UNION at read time.
+///
+/// Ordering is `position`, then `scheduledStart`, then `createdAt`, then `id`:
+/// fully deterministic even when positions collide.
+model SpaceItem {
+  id      String @id @default(cuid(2))
+  spaceId String
+  userId  String
+
+  kind     SpaceItemKind
+  /// Sparse ordering key. Gaps are intentional so a reorder rewrites one row.
+  position Int           @default(0)
+
+  taskId          String? @unique
+  reminderId      String? @unique
+  calendarEventId String? @unique
+
+  /// Denormalised from the referenced row so the timeline can be read and sorted
+  /// without joining three tables. Kept in step by the repository layer.
+  scheduledStart DateTime? @db.Timestamptz(3)
+  scheduledEnd   DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  space         Space          @relation(fields: [spaceId], references: [id], onDelete: Cascade)
+  user          User           @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task          Task?          @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  reminder      Reminder?      @relation(fields: [reminderId], references: [id], onDelete: Cascade)
+  calendarEvent CalendarEvent? @relation(fields: [calendarEventId], references: [id], onDelete: Cascade)
+
+  @@index([spaceId, position])
+  @@index([spaceId, scheduledStart])
+  @@map("space_items")
+}
+
+// -----------------------------------------------------------------------------
+// Work
+// -----------------------------------------------------------------------------
+
+/// A unit of work.
+///
+/// `spaceId` is nullable: an inbox task exists before it is placed on a day.
+/// `userId` is denormalised so every ownership check and every index is a single
+/// table lookup rather than a join through `Space`.
+model Task {
+  id      String  @id @default(cuid(2))
+  userId  String
+  spaceId String?
+  goalId  String?
+
+  title       String
+  description String?
+  notes       String?
+
+  priority TaskPriority @default(NORMAL)
+  status   TaskStatus   @default(INBOX)
+
+  estimatedMinutes Int?
+  actualMinutes    Int?
+
+  /// The deadline: an instant, because "due at 17:00 on Friday" is a moment.
+  dueAt          DateTime? @db.Timestamptz(3)
+  scheduledStart DateTime? @db.Timestamptz(3)
+  scheduledEnd   DateTime? @db.Timestamptz(3)
+  completedAt    DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  space     Space?     @relation(fields: [spaceId], references: [id], onDelete: SetNull)
+  goal      Goal?      @relation(fields: [goalId], references: [id], onDelete: SetNull)
+  reminders Reminder[]
+  spaceItem SpaceItem?
+
+  /// The task list of one day, in priority order.
+  @@index([spaceId, status, priority])
+  /// "What is open for this user", the most common authenticated read.
+  @@index([userId, status, dueAt])
+  /// Deadline Engine: upcoming deadlines for one user.
+  @@index([userId, dueAt])
+  /// Scheduling and Conflict Engines: what occupies a window of time.
+  @@index([userId, scheduledStart])
+  @@index([goalId])
+  @@map("tasks")
+}
+
+/// A time-based nudge.
+///
+/// Recurrence is stored as structured columns rather than an RRULE string so it
+/// can be filtered in SQL. Only the rule is stored here; expanding it into
+/// occurrences is the job of a later stage, and `parentId` is where those
+/// generated occurrences will point.
+model Reminder {
+  id      String  @id @default(cuid(2))
+  userId  String
+  spaceId String?
+  taskId  String?
+
+  title       String
+  description String?
+
+  /// The instant the reminder is due.
+  remindAt DateTime @db.Timestamptz(3)
+  /// The zone the rule is expressed in; required to expand recurrence correctly
+  /// across DST boundaries.
+  timeZone String
+
+  status        ReminderStatus @default(PENDING)
+  deliveryState DeliveryState  @default(PENDING)
+  deliveredAt   DateTime?      @db.Timestamptz(3)
+  failureReason String?
+
+  recurrenceFrequency RecurrenceFrequency?
+  recurrenceInterval  Int?
+  recurrenceByWeekday Weekday[]
+  recurrenceUntil     DateTime?            @db.Timestamptz(3)
+  recurrenceCount     Int?
+
+  /// Set on a generated occurrence, pointing at the rule that produced it.
+  parentId String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user        User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  space       Space?     @relation(fields: [spaceId], references: [id], onDelete: SetNull)
+  task        Task?      @relation(fields: [taskId], references: [id], onDelete: Cascade)
+  parent      Reminder?  @relation("ReminderSeries", fields: [parentId], references: [id], onDelete: Cascade)
+  occurrences Reminder[] @relation("ReminderSeries")
+  spaceItem   SpaceItem?
+
+  /// The dispatcher's only query: undelivered reminders that are now due.
+  @@index([deliveryState, remindAt])
+  @@index([userId, remindAt])
+  @@index([spaceId])
+  @@index([taskId])
+  @@index([parentId])
+  @@map("reminders")
+}
+
+/// A longer-horizon objective that tasks can contribute to.
+///
+/// Intentionally small. It exists now so `Task.goalId` has somewhere to point
+/// and a later stage does not have to backfill the relation.
+model Goal {
+  id     String @id @default(cuid(2))
+  userId String
+
+  title       String
+  description String?
+  status      GoalStatus @default(ACTIVE)
+  /// A target day, not an instant.
+  targetDate  DateTime?  @db.Date
+  achievedAt  DateTime?  @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  tasks Task[]
+
+  @@index([userId, status])
+  @@map("goals")
+}
+
+// -----------------------------------------------------------------------------
+// Calendar
+// -----------------------------------------------------------------------------
+
+/// A link to an external calendar account.
+///
+/// No tokens yet: Stage 4 adds encrypted credential storage. `syncCursor` holds
+/// the provider's incremental sync token, which is what makes a two-way sync
+/// cheap rather than a full re-import.
+model CalendarConnection {
+  id     String @id @default(cuid(2))
+  userId String
+
+  provider          CalendarProvider
+  /// The provider's account identifier, never the user's password or token.
+  providerAccountId String
+  status            ConnectionStatus @default(CONNECTED)
+  /// Space-separated OAuth scopes actually granted, for capability checks.
+  grantedScopes     String?
+  syncCursor        String?
+  lastSyncedAt      DateTime?        @db.Timestamptz(3)
+  lastErrorAt       DateTime?        @db.Timestamptz(3)
+  lastErrorMessage  String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  calendars Calendar[]
+
+  /// One connection per provider account per user; reconnecting updates in place.
+  @@unique([userId, provider, providerAccountId])
+  @@index([status, lastSyncedAt])
+  @@map("calendar_connections")
+}
+
+/// One calendar inside a connection.
+model Calendar {
+  id           String @id @default(cuid(2))
+  connectionId String
+  userId       String
+
+  externalId  String
+  name        String
+  description String?
+  timeZone    String
+  isPrimary   Boolean @default(false)
+  /// Whether this calendar participates in synchronisation.
+  isSelected  Boolean @default(true)
+  color       String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  connection CalendarConnection @relation(fields: [connectionId], references: [id], onDelete: Cascade)
+  user       User               @relation(fields: [userId], references: [id], onDelete: Cascade)
+  events     CalendarEvent[]
+
+  @@unique([connectionId, externalId])
+  @@index([userId, isSelected])
+  @@map("calendars")
+}
+
+/// An event mirrored from, or destined for, an external calendar.
+///
+/// `(calendarId, externalId)` is unique: that is what makes an import idempotent.
+/// The pair is scoped to the calendar rather than to the provider, because two
+/// different accounts may legitimately hold the same provider event id.
+model CalendarEvent {
+  id         String  @id @default(cuid(2))
+  calendarId String
+  userId     String
+  spaceId    String?
+
+  provider     CalendarProvider
+  externalId   String
+  /// Provider version marker; lets a sync skip rows that have not changed.
+  externalEtag String?
+
+  title       String
+  description String?
+  location    String?
+
+  startAt  DateTime @db.Timestamptz(3)
+  endAt    DateTime @db.Timestamptz(3)
+  /// The zone the event was authored in; needed to render all-day and recurring
+  /// events the way the organiser meant them.
+  timeZone String
+  isAllDay Boolean  @default(false)
+
+  status    CalendarEventStatus @default(CONFIRMED)
+  syncState SyncState           @default(SYNCED)
+
+  lastSyncedAt DateTime? @db.Timestamptz(3)
+  /// Tombstone for an event removed upstream; kept so a plan that referenced it
+  /// can explain itself.
+  deletedAt    DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  calendar  Calendar   @relation(fields: [calendarId], references: [id], onDelete: Cascade)
+  user      User       @relation(fields: [userId], references: [id], onDelete: Cascade)
+  space     Space?     @relation(fields: [spaceId], references: [id], onDelete: SetNull)
+  spaceItem SpaceItem?
+
+  @@unique([calendarId, externalId])
+  /// Conflict Engine: everything occupying a window for one user.
+  @@index([userId, startAt])
+  @@index([calendarId, startAt])
+  /// Sync worker: rows still owing a push or pull.
+  @@index([syncState, lastSyncedAt])
+  @@index([spaceId])
+  @@map("calendar_events")
+}
+
+// -----------------------------------------------------------------------------
+// Delivery
+// -----------------------------------------------------------------------------
+
+/// Something the product wants to tell the user.
+model Notification {
+  id     String @id @default(cuid(2))
+  userId String
+
+  type     NotificationType
+  priority NotificationPriority @default(NORMAL)
+  title    String
+  body     String
+
+  readAt        DateTime?     @db.Timestamptz(3)
+  deliveryState DeliveryState @default(PENDING)
+  /// When it should be delivered; null means "as soon as possible".
+  scheduledAt   DateTime?     @db.Timestamptz(3)
+  sentAt        DateTime?     @db.Timestamptz(3)
+  failureReason String?
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// The notification bell: newest first for one user.
+  @@index([userId, createdAt(sort: Desc)])
+  /// Unread badge count without scanning history.
+  @@index([userId, readAt])
+  /// Dispatcher: what is due to go out.
+  @@index([deliveryState, scheduledAt])
+  @@map("notifications")
+}
+
+/// One outbound email attempt.
+///
+/// A log, not a queue: it records what was sent, to whom and what the provider
+/// said. The body is never stored — only the template that produced it.
+model EmailLog {
+  id     String  @id @default(cuid(2))
+  userId String?
+
+  recipient         String
+  template          String
+  provider          String
+  providerMessageId String?
+
+  status        EmailStatus @default(QUEUED)
+  failureReason String?
+  retryCount    Int         @default(0)
+  sentAt        DateTime?   @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Provider webhooks arrive keyed by their own id.
+  @@unique([provider, providerMessageId])
+  @@index([userId, createdAt(sort: Desc)])
+  @@index([status, createdAt])
+  @@map("email_logs")
+}
+
+// -----------------------------------------------------------------------------
+// Audit and history
+// -----------------------------------------------------------------------------
+
+/// An automated decision made by the deterministic Space Engine.
+///
+/// This is an audit trail. Every row records which rule ran, the inputs it read
+/// (`factors`), and the before/after state it produced. There is no model, no
+/// inference and no generated text anywhere in this system: `reason` names a
+/// rule, so a user can always be told exactly why their day changed.
+///
+/// The JSON columns are genuinely heterogeneous — each action type reads
+/// different factors — and are written once and never queried by shape.
+model AgentAction {
+  id      String  @id @default(cuid(2))
+  userId  String
+  spaceId String?
+
+  actionType AgentActionType
+  outcome    AgentActionOutcome @default(SUCCEEDED)
+
+  /// Which row the decision was about, when it was about one.
+  entityType AggregateType?
+  entityId   String?
+
+  /// The rule that fired, in stable machine-readable form.
+  reason     String
+  factors    Json           @default("{}")
+  previousState Json?
+  resultingState Json?
+
+  /// Ties every action taken during one planning pass together.
+  correlationId String?
+  durationMs    Int?
+
+  occurredAt DateTime @default(now()) @db.Timestamptz(3)
+
+  user  User   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  space Space? @relation(fields: [spaceId], references: [id], onDelete: SetNull)
+
+  @@index([userId, occurredAt(sort: Desc)])
+  @@index([spaceId, occurredAt(sort: Desc)])
+  @@index([correlationId])
+  @@map("agent_actions")
+}
+
+/// An immutable record of something that happened in the domain.
+///
+/// `sequence` is a monotonic bigint. Stage 7 will read this table as a
+/// transactional outbox — "give me everything after cursor N" — which needs a
+/// total order that a cuid cannot provide. Rows are append-only: there is no
+/// `updatedAt`, and nothing updates them.
+model EventLog {
+  id       String @id @default(cuid(2))
+  sequence BigInt @default(autoincrement())
+
+  eventType     EventType
+  userId        String
+  aggregateType AggregateType
+  aggregateId   String
+
+  /// The event body. Genuinely schema-less: each event type carries its own
+  /// shape, and an older consumer must tolerate a newer producer.
+  payload Json @default("{}")
+
+  occurredAt DateTime @default(now()) @db.Timestamptz(3)
+
+  /// Groups every event produced by one originating request or planning pass.
+  correlationId String?
+  /// The event that directly caused this one.
+  causationId   String?
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  /// Outbox cursor: strictly ordered reads across all users.
+  @@index([sequence])
+  /// A user's activity feed, newest first.
+  @@index([userId, occurredAt(sort: Desc)])
+  /// The history of one entity.
+  @@index([aggregateType, aggregateId, occurredAt])
+  @@index([eventType, occurredAt])
+  @@index([correlationId])
+  @@map("event_logs")
+}
+
+/// A daily roll-up used by future analytics.
+///
+/// Only counts that are expensive to recompute over history are stored; anything
+/// derivable from a single day's rows in one query is left out deliberately.
+model ProductivitySnapshot {
+  id     String @id @default(cuid(2))
+  userId String
+
+  /// The day being described, in `timeZone`.
+  date     DateTime @db.Date
+  timeZone String
+
+  tasksPlanned     Int @default(0)
+  tasksCompleted   Int @default(0)
+  tasksMissed      Int @default(0)
+  plannedMinutes   Int @default(0)
+  completedMinutes Int @default(0)
+
+  computedAt DateTime @default(now()) @db.Timestamptz(3)
+
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@unique([userId, date])
+  @@index([userId, date(sort: Desc)])
+  @@map("productivity_snapshots")
+}

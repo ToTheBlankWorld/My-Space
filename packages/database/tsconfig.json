@@ -1,0 +1,5 @@
+{
+  "extends": "@space/typescript-config/node.json",
+  "include": ["src/**/*.ts", "prisma/**/*.ts", "*.config.ts", "eslint.config.mjs"],
+  "exclude": ["node_modules", "src/generated"]
+}

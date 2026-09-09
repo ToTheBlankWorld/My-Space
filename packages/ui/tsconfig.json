@@ -1,0 +1,4 @@
+{
+  "extends": "@space/typescript-config/react-library.json",
+  "include": ["src/**/*.ts", "src/**/*.tsx", "*.config.ts", "vitest.setup.ts", "eslint.config.mjs"]
+}

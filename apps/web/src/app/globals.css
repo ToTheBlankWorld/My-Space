@@ -1,0 +1,108 @@
+@import 'tailwindcss';
+
+/* Components live in a workspace package; Tailwind must scan them too. */
+@source '../../../../packages/ui/src';
+
+/* ---------------------------------------------------------------------------
+   Design tokens
+
+   Space is a neutral, typography-led product. The palette is intentionally
+   near-monochrome with a single warm accent, so hierarchy comes from spacing,
+   weight and contrast rather than from colour.
+   ------------------------------------------------------------------------ */
+:root {
+  --background: oklch(0.986 0.002 95);
+  --surface: oklch(1 0 0);
+  --surface-raised: oklch(0.995 0.001 95);
+  --foreground: oklch(0.19 0.008 65);
+  --muted: oklch(0.955 0.003 95);
+  --muted-foreground: oklch(0.52 0.009 75);
+  --border: oklch(0.9 0.004 90);
+  --border-strong: oklch(0.84 0.005 90);
+  --accent: oklch(0.58 0.108 48);
+  --accent-foreground: oklch(0.99 0.002 95);
+  --ring: oklch(0.45 0.02 70);
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --background: oklch(0.168 0.004 95);
+    --surface: oklch(0.203 0.005 95);
+    --surface-raised: oklch(0.232 0.006 95);
+    --foreground: oklch(0.962 0.002 95);
+    --muted: oklch(0.243 0.005 95);
+    --muted-foreground: oklch(0.694 0.008 90);
+    --border: oklch(0.283 0.006 95);
+    --border-strong: oklch(0.352 0.007 95);
+    --accent: oklch(0.72 0.115 55);
+    --accent-foreground: oklch(0.18 0.008 65);
+    --ring: oklch(0.72 0.02 90);
+  }
+}
+
+@theme inline {
+  --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-raised: var(--surface-raised);
+  --color-foreground: var(--foreground);
+  --color-muted: var(--muted);
+  --color-muted-foreground: var(--muted-foreground);
+  --color-border: var(--border);
+  --color-border-strong: var(--border-strong);
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+  --color-ring: var(--ring);
+
+  --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
+
+  --text-display: 3.75rem;
+  --text-display--line-height: 1.02;
+  --text-display--letter-spacing: -0.035em;
+}
+
+@layer base {
+  *,
+  ::after,
+  ::before {
+    border-color: var(--color-border);
+  }
+
+  html {
+    scroll-behavior: smooth;
+    /* Anchored sections must clear the sticky header. */
+    scroll-padding-top: 6rem;
+    -webkit-text-size-adjust: 100%;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    html {
+      scroll-behavior: auto;
+    }
+
+    *,
+    ::after,
+    ::before {
+      animation-duration: 0.01ms !important;
+      animation-iteration-count: 1 !important;
+      transition-duration: 0.01ms !important;
+    }
+  }
+
+  body {
+    background-color: var(--color-background);
+    color: var(--color-foreground);
+    font-family: var(--font-sans);
+    -webkit-font-smoothing: antialiased;
+    text-rendering: optimizeLegibility;
+  }
+
+  ::selection {
+    background-color: color-mix(in oklab, var(--color-accent) 22%, transparent);
+  }
+
+  :focus-visible {
+    outline: 2px solid var(--color-ring);
+    outline-offset: 2px;
+  }
+}

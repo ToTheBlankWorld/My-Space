@@ -1,0 +1,47 @@
+{
+  "$schema": "https://turbo.build/schema.json",
+  "ui": "stream",
+  "globalDependencies": ["**/.env.*local", "tsconfig.json", ".prettierrc.json"],
+  "globalEnv": ["NODE_ENV", "CI"],
+  "tasks": {
+    "build": {
+      "dependsOn": ["^build", "db:generate", "^db:generate"],
+      "env": ["APP_URL", "ANALYZE", "DATABASE_URL", "DIRECT_DATABASE_URL"],
+      "outputs": [".next/**", "!.next/cache/**", "dist/**"]
+    },
+    "dev": {
+      "cache": false,
+      "persistent": true
+    },
+    "lint": {
+      "dependsOn": ["^lint", "db:generate", "^db:generate"],
+      "outputs": []
+    },
+    "typecheck": {
+      "dependsOn": ["^typecheck", "db:generate", "^db:generate"],
+      "outputs": []
+    },
+    "test": {
+      "outputs": [],
+      "dependsOn": ["db:generate", "^db:generate"],
+      "env": ["TEST_DATABASE_URL", "DATABASE_URL"]
+    },
+    "test:watch": {
+      "cache": false,
+      "persistent": true,
+      "dependsOn": ["db:generate", "^db:generate"]
+    },
+    "clean": {
+      "cache": false
+    },
+    "db:generate": {
+      "cache": true,
+      "inputs": ["prisma/schema.prisma", "prisma.config.ts"],
+      "outputs": ["src/generated/**"]
+    },
+    "db:migrate:deploy": {
+      "cache": false,
+      "dependsOn": ["db:generate"]
+    }
+  }
+}
