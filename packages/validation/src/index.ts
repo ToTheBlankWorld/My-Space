@@ -45,6 +45,7 @@ export {
   createTaskSchema,
   updateTaskSchema,
   changeTaskStatusSchema,
+  createDependencySchema,
   recurrenceSchema,
   createReminderSchema,
   createGoalSchema,

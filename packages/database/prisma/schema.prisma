@@ -193,6 +193,9 @@ enum EventType {
   SPACE_CREATED
   SPACE_UPDATED
   SPACE_OPTIMIZED
+  PLANNING_STARTED
+  PLANNING_COMPLETED
+  PLANNING_FAILED
   TASK_CREATED
   TASK_UPDATED
   TASK_COMPLETED
@@ -204,7 +207,15 @@ enum EventType {
   GOAL_CREATED
   GOAL_ACHIEVED
   CALENDAR_CHANGED
+  CALENDAR_CONNECTED
+  CALENDAR_DISCONNECTED
+  CALENDAR_SYNCED
+  CALENDAR_SYNC_FAILED
   NOTIFICATION_SENT
+  NOTIFICATION_CREATED
+  NOTIFICATION_QUEUED
+  NOTIFICATION_FAILED
+  REMINDER_SKIPPED
 }
 
 enum AggregateType {
@@ -214,6 +225,7 @@ enum AggregateType {
   REMINDER
   GOAL
   CALENDAR_EVENT
+  CALENDAR_CONNECTION
   NOTIFICATION
 }
 
@@ -266,6 +278,7 @@ status     UserStatus @default(ACTIVE)
   spaces              Space[]
   spaceItems          SpaceItem[]
   tasks               Task[]
+  taskDependencies    TaskDependency[]
   reminders           Reminder[]
   goals               Goal[]
   calendarConnections CalendarConnection[]
@@ -600,6 +613,8 @@ model Task {
   goal      Goal?      @relation(fields: [goalId], references: [id], onDelete: SetNull)
   reminders Reminder[]
   spaceItem SpaceItem?
+  dependencies TaskDependency[] @relation("TaskDependencies")
+  prerequisiteOf TaskDependency[] @relation("TaskPrerequisite")
 
   /// The task list of one day, in priority order.
   @@index([spaceId, status, priority])
@@ -611,6 +626,37 @@ model Task {
   @@index([userId, scheduledStart])
   @@index([goalId])
   @@map("tasks")
+}
+
+/// A dependency edge between two tasks: `taskId` cannot start before
+/// `dependsOnId` finishes.
+///
+/// Referential integrity is enforced both ways: deleting either task removes
+/// the edge. A CHECK constraint forbids self-dependency. The Dependencies
+/// component of the Space Engine reads this table to enforce prerequisite
+/// ordering deterministically.
+model TaskDependency {
+  id          String @id @default(cuid(2))
+  userId      String
+  /// The task that depends on another.
+  taskId      String
+  /// The prerequisite task that must finish first.
+  dependsOnId String
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  user      User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  task      Task @relation("TaskDependencies", fields: [taskId], references: [id], onDelete: Cascade)
+  dependsOn Task @relation("TaskPrerequisite", fields: [dependsOnId], references: [id], onDelete: Cascade)
+
+  /// One edge per pair of tasks; re-adding is idempotent.
+  @@unique([taskId, dependsOnId])
+  /// Reverse lookup: everything a task is a prerequisite for.
+  @@index([dependsOnId])
+  /// The engine's loading query: every dependency for a user's day.
+  @@index([userId, taskId])
+  @@map("task_dependencies")
 }
 
 /// A time-based nudge.
@@ -698,7 +744,11 @@ model Goal {
 
 /// A link to an external calendar account.
 ///
-/// No tokens yet: Stage 4 adds encrypted credential storage. `syncCursor` holds
+/// `accessToken` and `refreshToken` are AEAD ciphertext (`spc.v1.<keyId>.<nonce>.
+/// <ciphertext>.<tag>`), never plaintext; encryption happens in `@space/calendar`
+/// with the same keyring `@space/auth` uses, with a purpose bound into the
+/// authenticated data (`calendar.accessToken`, `calendar.refreshToken`) so a
+/// credential can never be replayed into an identity column. `syncCursor` holds
 /// the provider's incremental sync token, which is what makes a two-way sync
 /// cheap rather than a full re-import.
 model CalendarConnection {
@@ -711,10 +761,15 @@ model CalendarConnection {
   status            ConnectionStatus @default(CONNECTED)
   /// Space-separated OAuth scopes actually granted, for capability checks.
   grantedScopes     String?
-  syncCursor        String?
-  lastSyncedAt      DateTime?        @db.Timestamptz(3)
-  lastErrorAt       DateTime?        @db.Timestamptz(3)
-  lastErrorMessage  String?
+  /// Encrypted. Decrypted only inside the sync worker and the OAuth callback.
+  accessToken          String?
+  /// Encrypted. Used to obtain a new access token; never leaves the server.
+  refreshToken         String?
+  accessTokenExpiresAt DateTime?        @db.Timestamptz(3)
+  syncCursor           String?
+  lastSyncedAt         DateTime?        @db.Timestamptz(3)
+  lastErrorAt          DateTime?        @db.Timestamptz(3)
+  lastErrorMessage     String?
 
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
@@ -785,6 +840,16 @@ model CalendarEvent {
   status    CalendarEventStatus @default(CONFIRMED)
   syncState SyncState           @default(SYNCED)
 
+  /// First instance metadata for events belonging to a recurring series.
+  ///
+  /// `recurringEventId` is the provider id of the series master and `originalStartAt`
+  /// the instance's original time. Both are preserved so a later stage can expand
+  /// or reason about recurrence without asking the provider again — the Conflict
+  /// Engine is not implemented yet, and its data must not be destroyed in the
+  /// meantime. The provider expense is zero: they are returned by every sync.
+  recurringEventId String?
+  originalStartAt  DateTime? @db.Timestamptz(3)
+
   lastSyncedAt DateTime? @db.Timestamptz(3)
   /// Tombstone for an event removed upstream; kept so a plan that referenced it
   /// can explain itself.
@@ -804,6 +869,8 @@ model CalendarEvent {
   @@index([calendarId, startAt])
   /// Sync worker: rows still owing a push or pull.
   @@index([syncState, lastSyncedAt])
+  /// Recurrence expansion: find every instance of one series for one user.
+  @@index([userId, recurringEventId])
   @@index([spaceId])
   @@map("calendar_events")
 }
@@ -822,6 +889,16 @@ model Notification {
   title    String
   body     String
 
+  /// Stable, server-generated idempotency key. Unique so a redelivered outbox
+  /// batch or a concurrent duplicate producer physically cannot create the same
+  /// notification twice. Random ids are never used here — the key encodes the
+  /// thing being announced (`daily:brief:{userId}:{date}`, `plan-change:{spaceId}:{v}`).
+  deliveryKey String? @unique
+
+  /// Safe in-app deep link, built by policy from APP_URL and validated entity
+  /// identifiers only — never from user input, and never an arbitrary URL.
+  linkUrl String?
+
   readAt        DateTime?     @db.Timestamptz(3)
   deliveryState DeliveryState @default(PENDING)
   /// When it should be delivered; null means "as soon as possible".
@@ -832,7 +909,8 @@ model Notification {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user      User        @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailLogs EmailLog[]
 
   /// The notification bell: newest first for one user.
   @@index([userId, createdAt(sort: Desc)])
@@ -856,6 +934,17 @@ model EmailLog {
   provider          String
   providerMessageId String?
 
+  /// Structured template data (task ids, dates, names) the template renders into
+  /// HTML at delivery time. The rendered body is never stored, and the data is
+  /// bounded — it never carries credentials or other users' content.
+  data Json?
+
+  /// Safe link back to the notification that produced this attempt, when there
+  /// is one. Kept separate from the Notification row so delivery state and
+  /// notification state never fight over the same column (Part 5 of the
+  /// notification spec).
+  notificationId String?
+
   status        EmailStatus @default(QUEUED)
   failureReason String?
   retryCount    Int         @default(0)
@@ -864,12 +953,14 @@ model EmailLog {
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
-  user User? @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user         User?         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  notification Notification? @relation(fields: [notificationId], references: [id], onDelete: SetNull)
 
   /// Provider webhooks arrive keyed by their own id.
   @@unique([provider, providerMessageId])
   @@index([userId, createdAt(sort: Desc)])
   @@index([status, createdAt])
+  @@index([notificationId])
   @@map("email_logs")
 }
 
@@ -956,6 +1047,24 @@ model EventLog {
   @@index([eventType, occurredAt])
   @@index([correlationId])
   @@map("event_logs")
+}
+
+/// Durable cursor for a transactional outbox consumer.
+///
+/// `EventLog` is the outbox: events are committed atomically with the domain
+/// change that caused them, and a consumer reads them in `sequence` order. This
+/// row records how far a consumer has *committed*, so a crash between "read a
+/// batch" and "effects persisted" replays from the same cursor — and the
+/// delivery idempotency keys make that replay a no-op instead of a duplicate.
+model OutboxCursor {
+  id            String  @id @default(cuid(2))
+  /// Stable consumer name (e.g. `notification-policy`); one row per consumer.
+  processorName String  @unique
+  /// The last EventLog `sequence` this consumer committed. 0 = nothing yet.
+  lastSequence  BigInt  @default(0)
+  updatedAt     DateTime @updatedAt @db.Timestamptz(3)
+
+  @@map("outbox_cursors")
 }
 
 /// A daily roll-up used by future analytics.

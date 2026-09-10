@@ -24,6 +24,14 @@ export interface UpsertConnectionInput {
   providerAccountId: string;
   status?: ConnectionStatus;
   grantedScopes?: string | null;
+  /**
+   * Encrypted OAuth access token (`spc.v1.<keyId>.<nonce>.<ciphertext>.<tag>`).
+   * Encrypted in `@space/calendar`; the database never sees plaintext.
+   */
+  accessToken?: string | null;
+  /** Encrypted OAuth refresh token; same custody rules as `accessToken`. */
+  refreshToken?: string | null;
+  accessTokenExpiresAt?: Date | null;
 }
 
 /**
@@ -31,7 +39,8 @@ export interface UpsertConnectionInput {
  *
  * Keyed on `(userId, provider, providerAccountId)` so re-authorising the same
  * Google account updates the existing row instead of accumulating duplicates.
- * No token is stored: credentials arrive in Stage 3 with encryption at rest.
+ * Tokens are ciphertext at rest, written by `@space/calendar` with the same
+ * keyring `@space/auth` uses under a `calendar.*` purpose.
  */
 export const upsertCalendarConnection = async (
   db: Database,
@@ -53,10 +62,16 @@ export const upsertCalendarConnection = async (
         providerAccountId: input.providerAccountId,
         status: input.status ?? 'CONNECTED',
         grantedScopes: input.grantedScopes ?? null,
+        accessToken: input.accessToken ?? null,
+        refreshToken: input.refreshToken ?? null,
+        accessTokenExpiresAt: input.accessTokenExpiresAt ?? null,
       },
       update: {
         status: input.status ?? 'CONNECTED',
         grantedScopes: input.grantedScopes ?? null,
+        accessToken: input.accessToken ?? null,
+        refreshToken: input.refreshToken ?? null,
+        accessTokenExpiresAt: input.accessTokenExpiresAt ?? null,
       },
     }),
   );
@@ -135,6 +150,9 @@ export const upsertCalendarEvent = async (
     lastSyncedAt: syncedAt,
     // An event that reappears upstream is resurrected rather than duplicated.
     deletedAt: null,
+    // Recurrence linkage: orders the engine needs to reason about a series.
+    recurringEventId: data.recurringEventId ?? null,
+    originalStartAt: data.originalStartAt ?? null,
   };
 
   return withDomainErrors('CalendarEvent', () =>

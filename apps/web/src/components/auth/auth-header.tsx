@@ -20,6 +20,14 @@ export const AuthHeader = () => (
         <span aria-hidden className="size-2 rounded-full bg-accent" />
         {site.name}
       </Link>
+      <nav aria-label="Account" className="flex items-center gap-6">
+        <Link
+          href="/notifications"
+          className="text-sm text-muted-foreground transition-colors hover:text-foreground"
+        >
+          Notifications
+        </Link>
+      </nav>
     </div>
   </header>
 );

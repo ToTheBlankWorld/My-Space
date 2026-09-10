@@ -1,4 +1,4 @@
-import { canTransitionTask, type PageRequest, type TaskStatus } from '@space/types';
+import { canTransitionTask, type EventType, type PageRequest, type TaskStatus } from '@space/types';
 import {
   createGoalSchema,
   createReminderSchema,
@@ -12,6 +12,8 @@ import { type z } from 'zod';
 import type { Database } from '../client';
 import { InvalidTransitionError, RecordNotFoundError, withDomainErrors } from '../errors';
 import { cursorQuery, toPage } from '../pagination';
+import { appendEvent } from './audit';
+import { recordAgentAction } from './audit';
 
 /**
  * Tasks, reminders and goals.
@@ -114,6 +116,108 @@ export const changeTaskStatus = async (
   });
 
   return db.task.findFirst({ where: { id: taskId, userId } });
+};
+
+const TRANSITION_EVENT: Partial<Record<TaskStatus, EventType>> = {
+  COMPLETED: 'TASK_COMPLETED',
+  MISSED: 'TASK_MISSED',
+  RESCHEDULED: 'TASK_RESCHEDULED',
+};
+
+/**
+ * Moves a task to a new status atomically with its audit trail.
+ *
+ * This is the transition the autonomous loop uses to mark work MISSED (an
+ * elapsed scheduled block that was never completed) and any future task surface
+ * reuses for completion. The status transition table is enforced here — the
+ * same rule as {@link changeTaskStatus} — and the change is recorded in the
+ * append-only event log *in the same unit of work*, so the audit trail can
+ * never drift from the state it describes.
+ *
+ * `trigger` names the actor (`autonomous` when the loop decided, `user`
+ * otherwise) and `reason` names the deterministic rule that fired, both for the
+ * AgentAction row. When called inside an existing `$transaction`, pass the
+ * transaction handle so the write, event and action commit together.
+ */
+export const transitionTaskStatus = async (
+  db: Database,
+  userId: string,
+  taskId: string,
+  status: TaskStatus,
+  occurredAt: Date,
+  options: {
+    trigger?: 'user' | 'autonomous';
+    reason?: string;
+    correlationId?: string;
+    spaceId?: string;
+  } = {},
+): Promise<{ taskId: string; from: TaskStatus; to: TaskStatus; changed: boolean }> => {
+  const task = await db.task.findFirst({
+    where: { id: taskId, userId },
+    select: { status: true, title: true, spaceId: true },
+  });
+
+  if (!task) {
+    throw new RecordNotFoundError('Task');
+  }
+
+  if (task.status === status) {
+    return { taskId, from: task.status, to: status, changed: false };
+  }
+
+  if (!canTransitionTask(task.status, status)) {
+    throw new InvalidTransitionError('Task', task.status, status);
+  }
+
+  const { trigger = 'user', reason = 'status-transition', correlationId, spaceId } = options;
+  const eventType = TRANSITION_EVENT[status];
+
+  return db.$transaction(async (tx) => {
+    await tx.task.updateMany({
+      where: { id: taskId, userId },
+      data: {
+        status,
+        completedAt: status === 'COMPLETED' ? occurredAt : null,
+      },
+    });
+
+    if (eventType) {
+      await appendEvent(tx, userId, {
+        eventType,
+        aggregateType: 'TASK',
+        aggregateId: taskId,
+        payload: {
+          from: task.status,
+          to: status,
+          trigger,
+          title: task.title.slice(0, 200),
+        },
+        occurredAt,
+        correlationId,
+      });
+    }
+
+    await recordAgentAction(tx, userId, {
+      actionType: 'TASK_DEFERRED',
+      outcome: 'SUCCEEDED',
+      entityType: 'TASK',
+      entityId: taskId,
+      spaceId: spaceId ?? task.spaceId ?? undefined,
+      reason,
+      factors: {
+        from: task.status,
+        to: status,
+        trigger,
+        rule: status === 'MISSED' ? 'elapsed-scheduled-block' : 'manual-transition',
+      },
+      previousState: { status: task.status },
+      resultingState: { status },
+      correlationId,
+      durationMs: null,
+    });
+
+    return { taskId, from: task.status, to: status, changed: true };
+  });
 };
 
 /**

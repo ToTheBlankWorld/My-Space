@@ -176,6 +176,25 @@ export const changeTaskStatusSchema = z.object({
 });
 
 /**
+ * A dependency edge between two tasks: `taskId` cannot start before
+ * `dependsOnId` finishes.
+ *
+ * `taskId !== dependsOnId` is enforced here and again by a database CHECK
+ * constraint, so a self-edge cannot slip in through any path.
+ */
+export const createDependencySchema = z
+  .object({
+    taskId: entityIdSchema,
+    dependsOnId: entityIdSchema,
+  })
+  .refine(({ taskId, dependsOnId }) => taskId !== dependsOnId, {
+    message: 'a task cannot depend on itself',
+    path: ['dependsOnId'],
+  });
+
+export type CreateDependencyInput = z.input<typeof createDependencySchema>;
+
+/**
  * Recurrence, stored as structured columns rather than an opaque RRULE string.
  *
  * Structured fields can be queried (`WHERE frequency = 'WEEKLY'`) and validated;
@@ -225,6 +244,8 @@ export const upsertCalendarEventSchema = z.object({
   isAllDay: z.boolean().default(false),
   status: calendarEventStatusSchema.default('CONFIRMED'),
   syncState: syncStateSchema.default('SYNCED'),
+  recurringEventId: externalIdSchema.nullish(),
+  originalStartAt: instantSchema.nullish(),
 });
 
 export const createNotificationSchema = z.object({

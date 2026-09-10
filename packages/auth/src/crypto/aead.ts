@@ -42,7 +42,12 @@ export class CredentialCryptoError extends Error {
  * refresh-token column, and a credential cannot be replayed into an unrelated
  * feature that shares the key.
  */
-export type CredentialPurpose = 'account.accessToken' | 'account.refreshToken' | 'account.idToken';
+export type CredentialPurpose =
+  | 'account.accessToken'
+  | 'account.refreshToken'
+  | 'account.idToken'
+  | 'calendar.accessToken'
+  | 'calendar.refreshToken';
 
 const encodeSegment = (value: Buffer): string => value.toString('base64url');
 

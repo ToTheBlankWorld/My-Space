@@ -1,5 +1,5 @@
 import { LOG_LEVELS } from '@space/types';
-import { nonEmptyStringSchema, portSchema } from '@space/validation';
+import { httpUrlSchema, nonEmptyStringSchema, portSchema } from '@space/validation';
 import { z } from 'zod';
 
 import { assertServerRuntime, defineEnv, type EnvSource } from './define-env';
@@ -26,14 +26,82 @@ export const workerEnvSchema = z.object({
   SHUTDOWN_TIMEOUT_MS: z.coerce.number().int().min(0).max(120_000).default(10_000),
 
   /**
-   * Optional PostgreSQL connection.
+   * PostgreSQL connection.
    *
-   * When present the worker opens a pool at boot and reports database
-   * reachability through `/readyz`. When absent it still boots: this stage has
-   * no queue consumers, and a developer must be able to run the process without
-   * standing up a database first.
+   * Required for the queue consumers and database health probe. When absent
+   * the worker still boots (for local development without a database), but
+   * queue consumers are not started.
    */
   DATABASE_URL: nonEmptyStringSchema.optional(),
+
+  /**
+   * Redis connection for BullMQ.
+   *
+   * Required for queue consumers. When absent the worker boots without queues.
+   */
+  REDIS_URL: nonEmptyStringSchema.optional(),
+
+  /**
+   * How often (in minutes) to run automatic calendar sync.
+   * Default: 15 minutes. Minimum: 5 minutes.
+   */
+  CALENDAR_SYNC_INTERVAL_MINUTES: z.coerce.number().int().min(5).max(1440).default(15),
+
+  /**
+   * Hard cap on tasks a single planning pass may schedule.
+   *
+   * A guard against pathological days: if the user somehow accumulates more
+   * tasks than this, the pass fails loudly instead of scheduling for hours.
+   */
+  PLANNING_MAX_TASKS_PER_PLAN: z.coerce.number().int().min(1).max(2000).default(100),
+
+  /**
+   * Google OAuth client ID.
+   * Needed to refresh tokens when they expire during sync.
+   */
+  GOOGLE_CLIENT_ID: nonEmptyStringSchema.optional(),
+  GOOGLE_CLIENT_SECRET: nonEmptyStringSchema.optional(),
+
+  /**
+   * OAuth encryption key for decrypting stored tokens.
+   * Same format as in @space/config/auth: `<keyId>:<base64 key>`.
+   */
+  OAUTH_ENCRYPTION_KEY: nonEmptyStringSchema.optional(),
+  OAUTH_ENCRYPTION_PREVIOUS_KEYS: z.string().optional(),
+
+  /**
+   * Public base URL of the web app.
+   *
+   * Used to build absolute, clickable links inside notification emails and
+   * in-app notification bodies.
+   */
+  APP_URL: httpUrlSchema.default('http://localhost:3000'),
+
+  /**
+   * AgentMail API key for the email delivery provider.
+   *
+   * Optional: when absent the worker still boots, but outbound email attempts
+   * are recorded as failed (`provider-not-configured`) rather than silently
+   * dropped or faked. Never logged.
+   */
+  AGENTMAIL_API_KEY: nonEmptyStringSchema.optional(),
+
+  /**
+   * AgentMail API base URL. Point at a sandbox when testing locally.
+   */
+  AGENTMAIL_BASE_URL: httpUrlSchema.default('https://api.agentmail.dev'),
+
+  /**
+   * How often (in minutes) the notification sweep runs: reminder dispatch,
+   * outbox consumption and enqueueing due notifications for delivery.
+   */
+  NOTIFICATION_SWEEP_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(60).default(5),
+
+  /**
+   * How often (in minutes) the autonomy review runs: observes real-world signals,
+   * detects at-risk deadlines, classifies calendar drift, and delegates replans.
+   */
+  AUTONOMY_REVIEW_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(60).default(5),
 });
 
 export type WorkerEnv = z.output<typeof workerEnvSchema>;

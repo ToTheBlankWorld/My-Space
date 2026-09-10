@@ -14,6 +14,12 @@ describe('worker environment', () => {
       LOG_LEVEL: 'info',
       HEALTH_PORT: 8080,
       SHUTDOWN_TIMEOUT_MS: 10_000,
+      CALENDAR_SYNC_INTERVAL_MINUTES: 15,
+      PLANNING_MAX_TASKS_PER_PLAN: 100,
+      APP_URL: 'http://localhost:3000',
+      AGENTMAIL_BASE_URL: 'https://api.agentmail.dev',
+      NOTIFICATION_SWEEP_INTERVAL_MINUTES: 5,
+      AUTONOMY_REVIEW_INTERVAL_MINUTES: 5,
     });
   });
 

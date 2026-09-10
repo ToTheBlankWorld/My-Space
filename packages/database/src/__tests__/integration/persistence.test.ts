@@ -627,6 +627,60 @@ describeIntegration('persistence', () => {
     expect(await db.calendarEvent.count({ where: { userId: user.id } })).toBe(2);
   });
 
+  it('persists and updates recurrence linkage on repeated syncs', async () => {
+    const user = await newUser('calendar-recurrence');
+    const connection = await calendar.upsertCalendarConnection(db, user.id, {
+      provider: 'GOOGLE',
+      providerAccountId: 'account-4',
+    });
+    const cal = await calendar.upsertCalendar(db, user.id, {
+      connectionId: connection.id,
+      externalId: 'primary',
+      name: 'Work',
+      timeZone: LISBON,
+    });
+
+    const payload = {
+      calendarId: cal.id,
+      externalId: 'abc-20260330T090000Z',
+      title: 'Weekly stand-up',
+      startAt: new Date('2026-03-30T09:00:00.000Z'),
+      endAt: new Date('2026-03-30T09:15:00.000Z'),
+      timeZone: LISBON,
+      recurringEventId: 'abc-def-123',
+      originalStartAt: new Date('2026-03-02T09:00:00.000Z'),
+    };
+
+    await calendar.upsertCalendarEvent(db, user.id, payload, { syncedAt: clock.now() });
+
+    const stored = await db.calendarEvent.findUniqueOrThrow({
+      where: {
+        calendarId_externalId: { calendarId: cal.id, externalId: payload.externalId },
+      },
+    });
+    expect(stored.recurringEventId).toBe('abc-def-123');
+    expect(stored.originalStartAt).toEqual(new Date('2026-03-02T09:00:00.000Z'));
+
+    // A moved occurrence updates the recurrence linkage, it does not duplicate.
+    const moved = await calendar.upsertCalendarEvent(
+      db,
+      user.id,
+      {
+        ...payload,
+        title: 'Weekly stand-up (moved)',
+        startAt: new Date('2026-03-30T15:00:00.000Z'),
+        endAt: new Date('2026-03-30T15:15:00.000Z'),
+      },
+      { syncedAt: clock.now() },
+    );
+
+    expect(moved.id).toBe(stored.id);
+    expect(moved.title).toBe('Weekly stand-up (moved)');
+    expect(moved.startAt).toEqual(new Date('2026-03-30T15:00:00.000Z'));
+    expect(moved.recurringEventId).toBe('abc-def-123');
+    expect(await db.calendarEvent.count({ where: { recurringEventId: 'abc-def-123' } })).toBe(1);
+  });
+
   it('selects events by half-open overlap', async () => {
     const user = await newUser('overlap');
     const connection = await calendar.upsertCalendarConnection(db, user.id, {

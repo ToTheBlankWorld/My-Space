@@ -53,8 +53,10 @@ export { cursorQuery, resolveLimit, toPage } from './pagination';
 export * as users from './repositories/users';
 export * as spaces from './repositories/spaces';
 export * as work from './repositories/work';
+export * as taskDependencies from './repositories/taskDependencies';
 export * as calendar from './repositories/calendar';
 export * as delivery from './repositories/delivery';
+export * as reminders from './repositories/reminders';
 export * as audit from './repositories/audit';
 
 // Prisma's generated namespace, for callers that need a filter type or an enum
@@ -68,6 +70,7 @@ export type {
   Space,
   SpaceItem,
   Task,
+  TaskDependency,
   Reminder,
   Goal,
   CalendarConnection,

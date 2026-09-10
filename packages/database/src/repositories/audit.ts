@@ -117,14 +117,23 @@ export interface OutboxBatch {
  */
 export const readEventOutbox = async (
   db: Database,
-  { afterSequence, limit = 100 }: { afterSequence?: string | bigint | null; limit?: number } = {},
+  {
+    afterSequence,
+    eventType,
+    limit = 100,
+  }: { afterSequence?: string | bigint | null; eventType?: string; limit?: number } = {},
 ): Promise<OutboxBatch> => {
   const take = resolveLimit(limit);
   const cursor =
     afterSequence === null || afterSequence === undefined ? null : BigInt(afterSequence);
 
   const rows = await db.eventLog.findMany({
-    where: cursor === null ? {} : { sequence: { gt: cursor } },
+    where: {
+      ...(cursor === null ? {} : { sequence: { gt: cursor } }),
+      // Callers filter to the event types they act on (eg. PLANNING_COMPLETED);
+      // `as never` bridges the generated enum for dynamic values.
+      ...(eventType === undefined ? {} : { eventType: eventType as never }),
+    },
     orderBy: { sequence: 'asc' },
     take,
   });
@@ -138,6 +147,38 @@ export const readEventOutbox = async (
     events,
     nextCursor: events.length === take ? (events[events.length - 1]?.sequence ?? null) : null,
   };
+};
+
+/**
+ * The last EventLog `sequence` a consumer committed, or null when it has never
+ * run. The cursor is owned by one consumer (`processorName`); two consumers
+ * never share a row.
+ */
+export const getOutboxCursor = async (db: Database, processorName: string) => {
+  const row = await db.outboxCursor.findUnique({ where: { processorName } });
+  return row
+    ? { processorName: row.processorName, lastSequence: row.lastSequence.toString() }
+    : null;
+};
+
+/**
+ * Advances (or seeds) a consumer's cursor to `lastSequence`.
+ *
+ * Call only after the effects for that batch have been committed in the same
+ * unit of work: the cursor is the contract "everything up to and including this
+ * sequence has been applied". Replaying from it must be safe, which is why the
+ * notification pipeline keys its effects with idempotency keys.
+ */
+export const advanceOutboxCursor = async (
+  db: Database,
+  processorName: string,
+  lastSequence: string | bigint,
+) => {
+  await db.outboxCursor.upsert({
+    where: { processorName },
+    create: { processorName, lastSequence: BigInt(lastSequence) },
+    update: { lastSequence: BigInt(lastSequence) },
+  });
 };
 
 /**
