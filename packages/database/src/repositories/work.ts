@@ -274,6 +274,31 @@ export const listOverdueTasks = async (
   return toPage(rows, page);
 };
 
+/**
+ * One read for the dashboard overview.
+ *
+ * True counts (not windowed lists) for the two honest statements an overview
+ * can make about a user's work: how many open tasks are late, and how many open
+ * tasks carry a deadline at all. Both are bounded by construction — a count is
+ * a count — and the ownership predicate keeps them per-actor.
+ */
+export const countTasksForOverview = async (
+  db: Database,
+  userId: string,
+  { now }: { now: Date },
+) => {
+  const OPEN = ['INBOX', 'PLANNED', 'IN_PROGRESS', 'RESCHEDULED', 'MISSED'] as const;
+
+  const [overdue, withDueDate] = await db.$transaction([
+    db.task.count({
+      where: { userId, status: { in: [...OPEN] }, dueAt: { not: null, lt: now } },
+    }),
+    db.task.count({ where: { userId, status: { in: [...OPEN] }, dueAt: { not: null } } }),
+  ]);
+
+  return { overdue, due: withDueDate };
+};
+
 export const createReminder = async (db: Database, userId: string, input: CreateReminderInput) => {
   const data = parseOrThrow(createReminderSchema, input, 'reminder');
 

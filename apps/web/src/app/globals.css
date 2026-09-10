@@ -22,6 +22,15 @@
   --accent: oklch(0.58 0.108 48);
   --accent-foreground: oklch(0.99 0.002 95);
   --ring: oklch(0.45 0.02 70);
+
+  /* Semantic status hues, used only where a state must be read at a glance.
+     Saturation is kept low so the near-monochrome hierarchy stays dominant. */
+  --success: oklch(0.58 0.09 150);
+  --success-foreground: oklch(0.99 0.002 95);
+  --warning: oklch(0.62 0.11 75);
+  --warning-foreground: oklch(0.99 0.002 95);
+  --danger: oklch(0.55 0.13 25);
+  --danger-foreground: oklch(0.99 0.002 95);
 }
 
 @media (prefers-color-scheme: dark) {
@@ -37,6 +46,13 @@
     --accent: oklch(0.72 0.115 55);
     --accent-foreground: oklch(0.18 0.008 65);
     --ring: oklch(0.72 0.02 90);
+
+    --success: oklch(0.68 0.1 150);
+    --success-foreground: oklch(0.17 0.008 65);
+    --warning: oklch(0.74 0.12 80);
+    --warning-foreground: oklch(0.17 0.008 65);
+    --danger: oklch(0.68 0.13 25);
+    --danger-foreground: oklch(0.17 0.008 65);
   }
 }
 
@@ -52,6 +68,13 @@
   --color-accent: var(--accent);
   --color-accent-foreground: var(--accent-foreground);
   --color-ring: var(--ring);
+
+  --color-success: var(--success);
+  --color-success-foreground: var(--success-foreground);
+  --color-warning: var(--warning);
+  --color-warning-foreground: var(--warning-foreground);
+  --color-danger: var(--danger);
+  --color-danger-foreground: var(--danger-foreground);
 
   --font-sans: var(--font-geist-sans), ui-sans-serif, system-ui, sans-serif;
   --font-mono: var(--font-geist-mono), ui-monospace, SFMono-Regular, monospace;
@@ -105,4 +128,27 @@
     outline: 2px solid var(--color-ring);
     outline-offset: 2px;
   }
+}
+
+/* ---------------------------------------------------------------------------
+   Entrance motion
+
+   A one-shot rise-in used on server-rendered panels. Pure CSS (no JavaScript),
+   so content is never hidden for users without JS; the global reduced-motion
+   rule above already collapses it to a single instant frame.
+   ------------------------------------------------------------------------ */
+@keyframes rise {
+  from {
+    opacity: 0;
+    transform: translateY(12px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.animate-rise {
+  animation: rise 0.55s cubic-bezier(0.16, 1, 0.3, 1) both;
+  animation-delay: var(--rise-delay, 0ms);
 }

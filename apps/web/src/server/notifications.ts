@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { delivery, type Notification } from '@space/database';
-import type { Page } from '@space/types';
+import type { Page, PageRequest } from '@space/types';
 
 import { clock } from './clock';
 import { getDatabase } from './database';
@@ -16,7 +16,10 @@ import { getDatabase } from './database';
  */
 export interface NotificationsService {
   unreadCount(userId: string): Promise<number>;
-  list(userId: string, options?: { unreadOnly?: boolean }): Promise<Page<Notification>>;
+  list(
+    userId: string,
+    options?: { unreadOnly?: boolean; page?: PageRequest },
+  ): Promise<Page<Notification>>;
   markRead(userId: string, notificationId: string): Promise<boolean>;
   markAllRead(userId: string): Promise<number>;
 }

@@ -1,16 +1,17 @@
 import type { Metadata } from 'next';
 import { notFound } from 'next/navigation';
+
 import { asCalendarDate, isCalendarDate } from '@space/time';
 
-import { AuthHeader } from '@/components/auth/auth-header';
-import { DayView } from '@/components/plan/day-view';
-import { getPlanningService } from '@/server/planning';
+import { AppShell } from '@/components/app/app-shell';
+import { DayWorkspace } from '@/components/day/day-workspace';
 import { requireOnboardedUser } from '@/server/session';
+import { getSpaceDayData } from '@/server/space';
 
 export const dynamic = 'force-dynamic';
 
 export const metadata: Metadata = {
-  title: 'Plan My Day',
+  title: 'Today',
 };
 
 interface SpaceDayPageProps {
@@ -18,11 +19,11 @@ interface SpaceDayPageProps {
 }
 
 /**
- * `/space/[date]` — the authoritative day view for one calendar date.
+ * `/space/[date]` — the authoritative day workspace for one calendar date.
  *
  * Reads the persisted day through the planning service (lazily creating the
- * Space for the date, exactly as planning does). The plan button on the page
- * POSTs to `/api/plan`, then refreshes this read.
+ * Space for the date, exactly as planning does), plus the space's autonomy
+ * trail. Mutations on the page re-read this server state after every write.
  */
 const SpaceDayPage = async ({ params }: SpaceDayPageProps) => {
   const { user } = await requireOnboardedUser();
@@ -32,16 +33,12 @@ const SpaceDayPage = async ({ params }: SpaceDayPageProps) => {
     notFound();
   }
 
-  const day = await getPlanningService().getDayState({
-    userId: user.id,
-    date: asCalendarDate(date),
-  });
+  const data = await getSpaceDayData(user.id, asCalendarDate(date));
 
   return (
-    <>
-      <AuthHeader />
-      <DayView day={day} />
-    </>
+    <AppShell>
+      <DayWorkspace data={data} />
+    </AppShell>
   );
 };
 
