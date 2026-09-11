@@ -19,8 +19,19 @@ export default defineConfig({
   // by tsup's default externalisation, which only reads this app's own
   // dependencies. `pg` and the Prisma runtime are CommonJS with native bindings:
   // inlining them into an ESM bundle produces
-  // `Error: Dynamic require of "events" is not supported` at boot. They are
-  // declared as runtime dependencies of this app so the deployment target
-  // installs them.
-  external: ['@prisma/client', '@prisma/adapter-pg', 'pg', 'pg-native'],
+  // `Error: Dynamic require of "events" is not supported` at boot, and the same
+  // shape of failure hits `googleapis`: google-auth-library performs a dynamic
+  // `require('child_process')` that tsup's ESM require shim rejects with
+  // `Dynamic require of "child_process" is not supported`, crashing the built
+  // worker before its health server ever listens. These packages are declared as
+  // runtime dependencies of this app so the deployment target installs them.
+  external: [
+    '@prisma/client',
+    '@prisma/adapter-pg',
+    'pg',
+    'pg-native',
+    'googleapis',
+    'google-auth-library',
+    'googleapis-common',
+  ],
 });
