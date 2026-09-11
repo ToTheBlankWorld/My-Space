@@ -1,5 +1,5 @@
 import type { Logger } from '@space/logger';
-import type { Metrics } from '@space/metrics';
+import type { Counter, Histogram, Metrics } from '@space/metrics';
 import { QUEUE_NAMES, QUEUE_PREFIX } from '@space/types';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
@@ -241,29 +241,58 @@ export const attachFailureLogging = (worker: Worker, logger: Logger): void => {
 };
 
 /**
- * Captures queue throughput and latency into the metrics registry.
+ * The shared set of job metric families for every BullMQ worker in the process.
+ *
+ * One `JobMetrics` is created once against the single process metrics registry;
+ * every worker's `attachJobMetrics` invocation reuses these meters and
+ * distinguishes its measurements with the `queue` and `jobName` labels. This
+ * keeps metric families registered exactly once while per-queue values still
+ * accumulate independently.
+ */
+export interface JobMetrics {
+  started: Counter;
+  completed: Counter;
+  failed: Counter;
+  duration: Histogram;
+}
+
+/**
+ * Registers the worker job metric families once into the shared registry.
+ *
+ * Call exactly once per process (from bootstrap) and pass the result to every
+ * `attachJobMetrics` call. Creating these meters per worker would trip the
+ * registry's duplicate-name guard.
+ */
+export const createJobMetrics = (metrics: Metrics): JobMetrics => ({
+  started: metrics.counter({
+    name: 'worker_jobs_started_total',
+    help: 'Jobs claimed and started by the worker',
+  }),
+  completed: metrics.counter({
+    name: 'worker_jobs_completed_total',
+    help: 'Jobs completed successfully by the worker',
+  }),
+  failed: metrics.counter({
+    name: 'worker_jobs_failed_total',
+    help: 'Jobs that exhausted their retries on the worker',
+  }),
+  duration: metrics.histogram(
+    { name: 'worker_job_duration_seconds', help: 'Job processing duration in seconds' },
+    [1, 5, 15, 30, 60],
+  ),
+});
+
+/**
+ * Captures queue throughput and latency into the shared job metrics.
  *
  * Counters track started/completed/failed per queue; the histogram records the
  * time from a job's processing start to its finish (completion or failure), so
- * both a slow queue and a regain of health are visible on `/metrics`.
+ * both a slow queue and a regain of health are visible on `/metrics`. The
+ * supplied `JobMetrics` meters are shared across all workers — this function
+ * only wires listeners and never registers metric families.
  */
-export const attachJobMetrics = (worker: Worker, metrics: Metrics, queueName: string): void => {
-  const started = metrics.counter({
-    name: 'worker_jobs_started_total',
-    help: 'Jobs claimed and started by the worker',
-  });
-  const completed = metrics.counter({
-    name: 'worker_jobs_completed_total',
-    help: 'Jobs completed successfully by the worker',
-  });
-  const failed = metrics.counter({
-    name: 'worker_jobs_failed_total',
-    help: 'Jobs that exhausted their retries on the worker',
-  });
-  const duration = metrics.histogram(
-    { name: 'worker_job_duration_seconds', help: 'Job processing duration in seconds' },
-    [1, 5, 15, 30, 60],
-  );
+export const attachJobMetrics = (worker: Worker, jobMetrics: JobMetrics, queueName: string): void => {
+  const { started, completed, failed, duration } = jobMetrics;
 
   const recordDuration = (job: { finishedOn?: number; processedOn?: number }): void => {
     const { finishedOn, processedOn } = job;

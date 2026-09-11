@@ -13,6 +13,7 @@ import { installProcessSignalHandlers } from './lifecycle/process-signals';
 import { ShutdownController } from './lifecycle/shutdown';
 import {
   attachJobMetrics,
+  createJobMetrics,
   createQueues,
   createRedisConnection,
   createRedisHealth,
@@ -54,6 +55,8 @@ const bootstrap = async (): Promise<void> => {
 
   // Process-lifetime metrics; exposed at /metrics on the health server.
   const metrics = createMetrics();
+  // Shared job metric families for every queue worker in this process.
+  const jobMetrics = createJobMetrics(metrics);
 
   const shutdown = new ShutdownController({ logger, timeoutMs: env.SHUTDOWN_TIMEOUT_MS });
 
@@ -133,7 +136,7 @@ const bootstrap = async (): Promise<void> => {
         intervalMinutes: env.CALENDAR_SYNC_INTERVAL_MINUTES,
         logger,
       });
-      attachJobMetrics(calendarSyncWorker, metrics, 'space:calendar-sync');
+      attachJobMetrics(calendarSyncWorker, jobMetrics, 'space:calendar-sync');
       logger.info('calendar sync worker started');
     } else {
       logger.warn(
@@ -169,7 +172,7 @@ const bootstrap = async (): Promise<void> => {
         intervalMinutes: env.MAINTENANCE_INTERVAL_MINUTES,
         logger,
       });
-      attachJobMetrics(maintenanceWorker, metrics, 'space:maintenance');
+      attachJobMetrics(maintenanceWorker, jobMetrics, 'space:maintenance');
 
       logger.info('maintenance worker started');
     } else {
@@ -186,7 +189,7 @@ const bootstrap = async (): Promise<void> => {
         clock: new SystemClock(),
         maxTasksPerPlan: env.PLANNING_MAX_TASKS_PER_PLAN,
       });
-      attachJobMetrics(planningWorker, metrics, 'space:planning');
+      attachJobMetrics(planningWorker, jobMetrics, 'space:planning');
       logger.info('planning worker started');
     } else {
       logger.warn('planning worker disabled: database configuration missing');
@@ -219,7 +222,7 @@ const bootstrap = async (): Promise<void> => {
         intervalMinutes: env.NOTIFICATION_SWEEP_INTERVAL_MINUTES,
         logger,
       });
-      attachJobMetrics(notificationWorker, metrics, 'space:notifications');
+      attachJobMetrics(notificationWorker, jobMetrics, 'space:notifications');
 
       logger.info(
         { emailProviderConfigured: emailProvider !== null },
@@ -247,7 +250,7 @@ const bootstrap = async (): Promise<void> => {
         intervalMinutes: env.AUTONOMY_REVIEW_INTERVAL_MINUTES,
         logger,
       });
-      attachJobMetrics(autonomyReviewWorker, metrics, 'space:autonomy-review');
+      attachJobMetrics(autonomyReviewWorker, jobMetrics, 'space:autonomy-review');
       logger.info('autonomy review worker started');
     } else {
       logger.warn('autonomy review worker disabled: database configuration missing');
