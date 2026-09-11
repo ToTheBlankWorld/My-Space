@@ -1,9 +1,12 @@
 import type { Logger } from '@space/logger';
 import type { Metrics } from '@space/metrics';
+import { QUEUE_NAMES, QUEUE_PREFIX } from '@space/types';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 
 import type { Worker } from 'bullmq';
+
+export { QUEUE_NAMES, QUEUE_PREFIX } from '@space/types';
 
 /**
  * Redis connection health check and lifecycle.
@@ -138,10 +141,10 @@ export type AutonomyReviewJobPayload = { kind: 'review' };
  * same stall and lock-recovery policy.
  */
 export const createQueues = (connection: Redis): QueueDefinitions => {
-  const connectionOptions = { connection };
+  const connectionOptions = { connection, prefix: QUEUE_PREFIX };
 
   return {
-    calendarSync: new Queue<CalendarSyncJobPayload>('space:calendar-sync', {
+    calendarSync: new Queue<CalendarSyncJobPayload>(QUEUE_NAMES.calendarSync, {
       ...connectionOptions,
       defaultJobOptions: {
         attempts: 3,
@@ -150,7 +153,7 @@ export const createQueues = (connection: Redis): QueueDefinitions => {
         removeOnFail: { age: 86400 },
       },
     }),
-    calendarRefresh: new Queue<CalendarRefreshJobPayload>('space:calendar-refresh', {
+    calendarRefresh: new Queue<CalendarRefreshJobPayload>(QUEUE_NAMES.calendarRefresh, {
       ...connectionOptions,
       defaultJobOptions: {
         attempts: 2,
@@ -159,7 +162,7 @@ export const createQueues = (connection: Redis): QueueDefinitions => {
         removeOnFail: { age: 86400 },
       },
     }),
-    maintenance: new Queue<MaintenanceJobPayload>('space:maintenance', {
+    maintenance: new Queue<MaintenanceJobPayload>(QUEUE_NAMES.maintenance, {
       ...connectionOptions,
       defaultJobOptions: {
         attempts: 1,
@@ -167,7 +170,7 @@ export const createQueues = (connection: Redis): QueueDefinitions => {
         removeOnFail: { age: 604800 },
       },
     }),
-    planning: new Queue<PlanningJobPayload>('space:planning', {
+    planning: new Queue<PlanningJobPayload>(QUEUE_NAMES.planning, {
       ...connectionOptions,
       defaultJobOptions: {
         attempts: 2,
@@ -176,7 +179,7 @@ export const createQueues = (connection: Redis): QueueDefinitions => {
         removeOnFail: { age: 604800 },
       },
     }),
-    notifications: new Queue<NotificationJobPayload>('space:notifications', {
+    notifications: new Queue<NotificationJobPayload>(QUEUE_NAMES.notifications, {
       ...connectionOptions,
       defaultJobOptions: {
         attempts: 3,
@@ -185,7 +188,7 @@ export const createQueues = (connection: Redis): QueueDefinitions => {
         removeOnFail: { age: 604800 },
       },
     }),
-    autonomyReview: new Queue<AutonomyReviewJobPayload>('space:autonomy-review', {
+    autonomyReview: new Queue<AutonomyReviewJobPayload>(QUEUE_NAMES.autonomyReview, {
       ...connectionOptions,
       defaultJobOptions: {
         attempts: 2,

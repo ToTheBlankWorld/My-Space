@@ -2,6 +2,7 @@ import { createAutonomyService, type AutonomyServiceDeps } from '@space/autonomy
 import type { Database } from '@space/database';
 import type { Logger } from '@space/logger';
 import type { Clock } from '@space/time';
+import { QUEUE_NAMES, QUEUE_PREFIX } from '@space/types';
 import { Worker, type Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 
@@ -60,13 +61,14 @@ export const createAutonomyReviewWorker = ({
   });
 
   const worker = new Worker<AutonomyReviewJobPayload>(
-    'space:autonomy-review',
+    QUEUE_NAMES.autonomyReview,
     async (_job: Job<AutonomyReviewJobPayload>) => {
       const summary = await service.review();
       return { success: true, summary };
     },
     {
       connection,
+      prefix: QUEUE_PREFIX,
       concurrency: 1,
       limiter: {
         max: 2,

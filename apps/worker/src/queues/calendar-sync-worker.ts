@@ -17,6 +17,7 @@ import {
   type GoogleClientCredentials,
   type SyncResult,
 } from '@space/calendar';
+import { QUEUE_NAMES, QUEUE_PREFIX } from '@space/types';
 import { Worker, type Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 
@@ -76,7 +77,7 @@ export const createCalendarSyncWorker = ({
   connection,
 }: CalendarSyncWorkerDeps): Worker => {
   const worker = new Worker<CalendarSyncJobPayload>(
-    'space:calendar-sync',
+    QUEUE_NAMES.calendarSync,
     async (job: Job<CalendarSyncJobPayload>) => {
       const { userId, connectionId, calendarId, fullSync } = job.data;
       const syncLogger = logger.child({
@@ -217,6 +218,7 @@ export const createCalendarSyncWorker = ({
     },
     {
       connection,
+      prefix: QUEUE_PREFIX,
       concurrency: 2,
       limiter: {
         max: 10,

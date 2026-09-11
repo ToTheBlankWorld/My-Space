@@ -8,6 +8,7 @@ import {
 } from '@space/planning';
 import type { PlanMode } from '@space/planning';
 import { asCalendarDate, type Clock } from '@space/time';
+import { QUEUE_NAMES, QUEUE_PREFIX } from '@space/types';
 import { Worker, type Job } from 'bullmq';
 import { randomUUID } from 'node:crypto';
 import type { Redis } from 'ioredis';
@@ -56,7 +57,7 @@ export const createPlanningWorker = ({
   maxTasksPerPlan = DEFAULT_TASKS,
 }: PlanningWorkerDeps): Worker => {
   const worker = new Worker<PlanningJobPayload>(
-    'space:planning',
+    QUEUE_NAMES.planning,
     async (job: Job<PlanningJobPayload>) => {
       const { userId, date, spaceId, planVersion, trigger } = job.data;
       const jobLogger = logger.child({ jobId: job.id, userId, date, spaceId });
@@ -223,6 +224,7 @@ export const createPlanningWorker = ({
     },
     {
       connection,
+      prefix: QUEUE_PREFIX,
       concurrency: 2,
       limiter: {
         max: 10,

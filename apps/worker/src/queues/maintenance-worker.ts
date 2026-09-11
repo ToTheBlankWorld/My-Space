@@ -2,6 +2,7 @@ import { retention, type Database } from '@space/database';
 import type { Logger } from '@space/logger';
 import type { Metrics } from '@space/metrics';
 import type { Clock } from '@space/time';
+import { QUEUE_NAMES, QUEUE_PREFIX } from '@space/types';
 import { Worker, type Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 
@@ -63,7 +64,7 @@ export const createMaintenanceWorker = ({
   };
 
   const worker = new Worker<MaintenanceJobPayload>(
-    'space:maintenance',
+    QUEUE_NAMES.maintenance,
     async (job: Job<MaintenanceJobPayload>) => {
       const taskLogger = logger.child({ jobId: job.id, task: job.data.task });
 
@@ -94,6 +95,7 @@ export const createMaintenanceWorker = ({
     },
     {
       connection,
+      prefix: QUEUE_PREFIX,
       concurrency: 1,
       lockDuration: WORKER_OPTIONS.lockDuration,
       maxStalledCount: WORKER_OPTIONS.maxStalledCount,

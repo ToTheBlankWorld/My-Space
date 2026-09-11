@@ -1,6 +1,7 @@
 import 'server-only';
 
 import { createLogger, type Logger } from '@space/logger';
+import { QUEUE_NAMES, QUEUE_PREFIX } from '@space/types';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 
@@ -13,7 +14,7 @@ import { Redis } from 'ioredis';
  * 503 rather than pretending the work happened.
  */
 
-const QUEUE_NAME = 'space:calendar-sync';
+const QUEUE_NAME = QUEUE_NAMES.calendarSync;
 
 export interface CalendarSyncJobPayload {
   userId: string;
@@ -54,6 +55,7 @@ const getQueue = (): Queue<CalendarSyncJobPayload> | null => {
 
     cache.__spaceCalendarQueue = new Queue<CalendarSyncJobPayload>(QUEUE_NAME, {
       connection,
+      prefix: QUEUE_PREFIX,
       defaultJobOptions: {
         attempts: 3,
         backoff: { type: 'exponential', delay: 5_000 },

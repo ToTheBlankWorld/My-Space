@@ -67,3 +67,5 @@ export type {
   EventType,
   AggregateType,
 } from './domain';
+export { QUEUE_PREFIX, QUEUE_NAMES } from './queueing';
+export type { QueueName } from './queueing';

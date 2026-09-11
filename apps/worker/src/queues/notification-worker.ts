@@ -8,6 +8,7 @@ import {
   type EmailProvider,
 } from '@space/notifications';
 import type { Clock } from '@space/time';
+import { QUEUE_NAMES, QUEUE_PREFIX } from '@space/types';
 import { Worker, type Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 
@@ -52,7 +53,7 @@ export const createNotificationWorker = ({
   queues,
 }: NotificationWorkerDeps): Worker => {
   const worker = new Worker<NotificationJobPayload>(
-    'space:notifications',
+    QUEUE_NAMES.notifications,
     async (job: Job<NotificationJobPayload>) => {
       const jobLogger = logger.child({ jobId: job.id, queue: 'space:notifications' });
       const provider = emailProvider;
@@ -121,6 +122,7 @@ export const createNotificationWorker = ({
     },
     {
       connection,
+      prefix: QUEUE_PREFIX,
       concurrency: 3,
       limiter: {
         max: 20,
