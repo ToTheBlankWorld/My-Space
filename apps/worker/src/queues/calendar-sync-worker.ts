@@ -21,6 +21,7 @@ import { Worker, type Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 
 import type { CalendarSyncJobPayload } from '.';
+import { attachFailureLogging, WORKER_OPTIONS } from '.';
 import { createConnectionSyncLock } from './sync-lock';
 
 /**
@@ -74,7 +75,7 @@ export const createCalendarSyncWorker = ({
   logger,
   connection,
 }: CalendarSyncWorkerDeps): Worker => {
-  return new Worker<CalendarSyncJobPayload>(
+  const worker = new Worker<CalendarSyncJobPayload>(
     'space:calendar-sync',
     async (job: Job<CalendarSyncJobPayload>) => {
       const { userId, connectionId, calendarId, fullSync } = job.data;
@@ -221,6 +222,12 @@ export const createCalendarSyncWorker = ({
         max: 10,
         duration: 60_000,
       },
+      lockDuration: WORKER_OPTIONS.lockDuration,
+      maxStalledCount: WORKER_OPTIONS.maxStalledCount,
     },
   );
+
+  attachFailureLogging(worker, logger);
+
+  return worker;
 };

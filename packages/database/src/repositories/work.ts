@@ -107,8 +107,13 @@ export const changeTaskStatus = async (
     throw new InvalidTransitionError('Task', task.status, status);
   }
 
+  // The transition was validated against the status read above; the write
+  // carries the same status as a compare-and-swap so a concurrent transition
+  // that landed between the read and the write is never silently overwritten.
+  // If it lost the race, the re-read below returns the current row and the
+  // caller can decide what the task actually is.
   await db.task.updateMany({
-    where: { id: taskId, userId },
+    where: { id: taskId, userId, status: task.status },
     data: {
       status,
       completedAt: status === 'COMPLETED' ? occurredAt : null,
@@ -173,13 +178,31 @@ export const transitionTaskStatus = async (
   const eventType = TRANSITION_EVENT[status];
 
   return db.$transaction(async (tx) => {
-    await tx.task.updateMany({
-      where: { id: taskId, userId },
+    // Compare-and-swap: the write only wins if the task still holds the status
+    // read above. A concurrent transition that landed in between must not be
+    // clobbered, and its audit trail must never be rewritten to claim a `from`
+    // that was never actually current.
+    const updated = await tx.task.updateMany({
+      where: { id: taskId, userId, status: task.status },
       data: {
         status,
         completedAt: status === 'COMPLETED' ? occurredAt : null,
       },
     });
+
+    if (updated.count === 0) {
+      const currentRow = await tx.task.findFirst({
+        where: { id: taskId, userId },
+        select: { status: true },
+      });
+      if (currentRow === null) {
+        throw new RecordNotFoundError('Task');
+      }
+      // The transition lost the race: report the real current status and write
+      // nothing. `changed: false` is the contract callers (the autonomy loop,
+      // the completion buttons) already treat as "nothing to do".
+      return { taskId, from: currentRow.status, to: status, changed: false };
+    }
 
     if (eventType) {
       await appendEvent(tx, userId, {

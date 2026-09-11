@@ -2,8 +2,9 @@ import { planErrorHttpStatus } from '@space/planning';
 import { asCalendarDate, isCalendarDate } from '@space/time';
 import { NextResponse } from 'next/server';
 
+import { readJsonBody } from '@/lib/http';
+import { requireApiUser, requireSameOrigin, spendRateLimit, withApi } from '@/server/api';
 import { getPlanningService } from '@/server/planning';
-import { getOptionalUser } from '@/server/session';
 
 /**
  * POST /api/plan
@@ -17,21 +18,21 @@ import { getOptionalUser } from '@/server/session';
  * page after the client calls `router.refresh()`.
  *
  * Error responses are shaped to the client and never leak internals; unknown
- * failures are a generic 500.
+ * failures are a generic 500. The route is a state-changing JSON API, so it is
+ * same-origin-gated and rate-limited per user.
  */
-export const POST = async (request: Request) => {
-  const context = await getOptionalUser();
-  if (!context) {
-    return NextResponse.json({ error: 'Authentication required.' }, { status: 401 });
-  }
+export const POST = withApi(async (request: Request) => {
+  const context = await requireApiUser();
+  requireSameOrigin(request);
+  spendRateLimit('plan', context.user.id);
 
-  let date: unknown;
-  try {
-    const body = (await request.json()) as { date?: unknown };
-    date = body.date;
-  } catch {
+  const result = await readJsonBody(request);
+  if (!result.ok) {
     return NextResponse.json({ error: 'Invalid JSON body; provide a date.' }, { status: 400 });
   }
+
+  const body = result.body as { date?: unknown };
+  const date = body.date;
 
   if (typeof date !== 'string' || !isCalendarDate(date)) {
     return NextResponse.json(
@@ -41,17 +42,17 @@ export const POST = async (request: Request) => {
   }
 
   try {
-    const result = await getPlanningService().planSpace({
+    const planResult = await getPlanningService().planSpace({
       userId: context.user.id,
       date: asCalendarDate(date),
     });
 
     return NextResponse.json({
-      planVersion: result.planVersion,
-      mode: result.mode,
-      applied: result.applied,
-      scheduled: result.scheduledItems.length,
-      unscheduled: result.unscheduledTasks.length,
+      planVersion: planResult.planVersion,
+      mode: planResult.mode,
+      applied: planResult.applied,
+      scheduled: planResult.scheduledItems.length,
+      unscheduled: planResult.unscheduledTasks.length,
     });
   } catch (error) {
     const status = planErrorHttpStatus(error);
@@ -67,4 +68,4 @@ export const POST = async (request: Request) => {
       { status },
     );
   }
-};
+});

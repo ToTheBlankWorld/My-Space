@@ -1,7 +1,25 @@
 import { google, type calendar_v3 } from 'googleapis';
 
-import { CalendarAuthError, CalendarRateLimitError, CalendarTransientError } from './errors';
+import {
+  CalendarAuthError,
+  CalendarError,
+  CalendarRateLimitError,
+  CalendarTransientError,
+  CalendarValidationError,
+} from './errors';
 import type { CalendarProviderAdapter, NormalizedCalendarEvent, ProviderCalendar } from './types';
+
+/**
+ * A single Google Calendar API page is capped at 250 calendars / 2500 events.
+ * Either list can span multiple pages, so every read loops on `nextPageToken`.
+ * The hard caps below bound one provider call: a calendar that exceeds them is a
+ * real risk of silent truncation, so it fails loudly as a permanent
+ * {@link CalendarValidationError} rather than quietly dropping rows.
+ */
+const CALENDAR_LIST_PAGE = 250;
+const MAX_CALENDARS = 1_000;
+const EVENTS_LIST_PAGE = 2500;
+const MAX_EVENTS = 10_000;
 
 /**
  * Maps a Google Calendar API error into a typed domain error.
@@ -136,14 +154,37 @@ export class GoogleCalendarProvider implements CalendarProviderAdapter {
   async listCalendars(accessToken: string): Promise<ProviderCalendar[]> {
     const calendar = this.getClient(accessToken);
 
-    let response;
-    try {
-      response = await calendar.calendarList.list({ maxResults: 250 });
-    } catch (error) {
-      mapGoogleError(error);
-    }
+    const items: NonNullable<calendar_v3.Schema$CalendarList['items']>[number][] = [];
+    let pageToken: string | undefined;
 
-    const items = response?.data.items ?? [];
+    for (;;) {
+      // `mapGoogleError` in the catch block always throws, so `response` is
+      // guaranteed to be assigned before the loop body reaches this point.
+      // The `!` assertion communicates that to TypeScript's definite-assignment
+      // analysis without relying on implicit `any`.
+      let response!: { data: calendar_v3.Schema$CalendarList };
+      try {
+        response = await calendar.calendarList.list({
+          maxResults: CALENDAR_LIST_PAGE,
+          pageToken,
+        });
+      } catch (error) {
+        mapGoogleError(error);
+      }
+
+      items.push(...(response.data.items ?? []));
+      pageToken = response.data.nextPageToken ?? undefined;
+
+      if (pageToken === undefined) {
+        break;
+      }
+
+      if (items.length > MAX_CALENDARS) {
+        throw new CalendarValidationError(
+          `Calendar list exceeded ${MAX_CALENDARS} calendars; refusing to truncate silently.`,
+        );
+      }
+    }
 
     return items
       .filter((cal): cal is NonNullable<typeof cal> & { id: string } => cal.id != null)
@@ -172,41 +213,62 @@ export class GoogleCalendarProvider implements CalendarProviderAdapter {
   }> {
     const calendar = this.getClient(accessToken);
 
+    const events: NormalizedCalendarEvent[] = [];
+    let pageToken: string | undefined;
+    let nextSyncToken: string | null = null;
+
     try {
-      if (params.syncToken) {
-        // Incremental sync: no time bounds, just "give me changes since this token".
-        const response = await calendar.events.list({
-          calendarId: params.calendarId,
-          syncToken: params.syncToken,
-          maxResults: 2500,
-        });
+      for (;;) {
+        // The sync token describes a point in time, not a page: it is carried
+        // on the first request only, and continuation pages navigate by
+        // `pageToken` alone. Full syncs repeat no query-scoping params across
+        // pages either — Google continues from the page token.
+        const response: { data: calendar_v3.Schema$Events } =
+          pageToken === undefined
+            ? params.syncToken
+              ? await calendar.events.list({
+                  calendarId: params.calendarId,
+                  syncToken: params.syncToken,
+                  maxResults: EVENTS_LIST_PAGE,
+                })
+              : await calendar.events.list({
+                  calendarId: params.calendarId,
+                  timeMin: params.timeMin?.toISOString(),
+                  timeMax: params.timeMax?.toISOString(),
+                  singleEvents: false,
+                  maxResults: EVENTS_LIST_PAGE,
+                })
+            : await calendar.events.list({
+                calendarId: params.calendarId,
+                maxResults: EVENTS_LIST_PAGE,
+                pageToken,
+              });
 
-        const events = (response.data.items ?? []).map(normalizeEvent);
+        events.push(...(response.data.items ?? []).map(normalizeEvent));
+        nextSyncToken = response.data.nextSyncToken ?? nextSyncToken;
+        pageToken = response.data.nextPageToken ?? undefined;
 
-        return {
-          events,
-          syncToken: response.data.nextSyncToken ?? null,
-          tokenExpired: false,
-        };
+        if (pageToken === undefined) {
+          break;
+        }
+
+        if (events.length > MAX_EVENTS) {
+          // More pages remain but the cap is reached. Dropping the rest would
+          // silently lose events the plans already reference, so this is a
+          // permanent validation failure the connection surfaces.
+          throw new CalendarValidationError(
+            `Event list exceeded ${MAX_EVENTS} events; refusing to truncate silently.`,
+          );
+        }
+      }
+    } catch (error) {
+      // A domain error we raised ourselves must never be re-mapped into a
+      // googleapis-typed error (that would turn a permanent validation failure
+      // into a transient one).
+      if (error instanceof CalendarError) {
+        throw error;
       }
 
-      // Full sync: bounded by time range.
-      const response = await calendar.events.list({
-        calendarId: params.calendarId,
-        timeMin: params.timeMin?.toISOString(),
-        timeMax: params.timeMax?.toISOString(),
-        singleEvents: false,
-        maxResults: 2500,
-      });
-
-      const events = (response.data.items ?? []).map(normalizeEvent);
-
-      return {
-        events,
-        syncToken: response.data.nextSyncToken ?? null,
-        tokenExpired: false,
-      };
-    } catch (error) {
       const apiError = error as { code?: number; errors?: Array<{ reason?: string }> };
       const reason = apiError.errors?.[0]?.reason;
 
@@ -223,6 +285,12 @@ export class GoogleCalendarProvider implements CalendarProviderAdapter {
       // Unreachable: mapGoogleError always throws. TypeScript needs this.
       return { events: [], syncToken: null, tokenExpired: false };
     }
+
+    return {
+      events,
+      syncToken: nextSyncToken,
+      tokenExpired: false,
+    };
   }
 
   async revokeAccess(accessToken: string): Promise<void> {

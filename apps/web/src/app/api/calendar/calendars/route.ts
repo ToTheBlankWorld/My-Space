@@ -1,7 +1,7 @@
 import { NextResponse } from 'next/server';
 
+import { requireApiUser, withApi } from '@/server/api';
 import { getCalendarDatabase } from '@/server/calendar';
-import { requireUser } from '@/server/session';
 
 /**
  * GET /api/calendar/calendars
@@ -10,8 +10,8 @@ import { requireUser } from '@/server/session';
  * Does not make a live Google API call — returns the locally stored calendar
  * records that were discovered during connection or the last sync.
  */
-export const GET = async () => {
-  const user = await requireUser();
+export const GET = withApi(async () => {
+  const user = await requireApiUser();
   const db = getCalendarDatabase();
 
   const calendars = await db.calendar.findMany({
@@ -33,4 +33,4 @@ export const GET = async () => {
   });
 
   return NextResponse.json({ calendars });
-};
+});

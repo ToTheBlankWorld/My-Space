@@ -101,7 +101,7 @@ Every authenticated screen renders inside `AppShell` (`components/app/app-shell.
   service) gates the entire shell; unauthenticated or un-onboarded users are
   redirected before any content composes.
 - **Today anchor** — the "Today" nav item links to the user's current calendar
-  date in *their* timezone (`getPlanningService().getToday(user.id)`), so the
+  date in _their_ timezone (`getPlanningService().getToday(user.id)`), so the
   primary action is correct even when the server lives in another region.
 - **Unread badge** — the rail pulls `getNotificationsService().unreadCount(user.id)`
   so the notification entry always shows live state.
@@ -138,7 +138,7 @@ through `getSpaceDayData(userId, date)`, and renders `DayWorkspace`
 ### Header
 
 Date navigation (previous / next calendar day, a **Today** anchor), the date as
-*"Thursday 10 September"*, the user's autonomy mode as a static badge, and the
+_"Thursday 10 September"_, the user's autonomy mode as a static badge, and the
 **Plan My Day** control.
 
 `PlanMyDay` (`components/day/plan-my-day.tsx`) is the same deterministic control
@@ -232,7 +232,7 @@ and drops rows into the same visual language as the rest of the shell.
 surface for the Stage 4 calendar integrations:
 
 - **Connections** — each linked calendar (provider, account, sync status)
-  rendered from safe selects that *never* include tokens; a **disconnect**
+  rendered from safe selects that _never_ include tokens; a **disconnect**
   control posts to `/api/calendar/disconnect` (best-effort revoke, mirrored
   events retained) and refreshes.
 - **Connect** — a button only when Google OAuth is actually configured
@@ -281,7 +281,7 @@ Three complementary layers, chosen so that decoration never hides content:
 3. **Shell states** —
    - each authenticated route ships `loading.tsx` re-exporting `AppLoading`, a
      skeleton silhouette of the shell with zero data reads;
-   - root `error.tsx` is a client boundary that offers *Try again* without
+   - root `error.tsx` is a client boundary that offers _Try again_ without
      inventing details ("your account, plans and settings are untouched");
    - root `not-found.tsx` handles both unknown routes and invalid day URLs with
      a single calm 404 to the overview.
@@ -361,13 +361,13 @@ aliases so the helpers are tested as they are shipped.
 
 Executed from the repo root at the end of Stage 10:
 
-| Check | Command | Result |
-| --- | --- | --- |
-| Typecheck | `pnpm typecheck` | 16/16 tasks pass |
-| Lint | `pnpm lint` | 16/16 tasks pass |
-| Tests | `pnpm test` | 16/16 packages pass (web included, 15 new tests) |
-| Formatting | `pnpm format:check` | all matched files use Prettier style |
-| Production build | `pnpm build:web` | exit 0 — compiled in 16.3s, 13/13 static pages generated, all 19 routes in the app table |
+| Check            | Command             | Result                                                                                   |
+| ---------------- | ------------------- | ---------------------------------------------------------------------------------------- |
+| Typecheck        | `pnpm typecheck`    | 16/16 tasks pass                                                                         |
+| Lint             | `pnpm lint`         | 16/16 tasks pass                                                                         |
+| Tests            | `pnpm test`         | 16/16 packages pass (web included, 15 new tests)                                         |
+| Formatting       | `pnpm format:check` | all matched files use Prettier style                                                     |
+| Production build | `pnpm build:web`    | exit 0 — compiled in 16.3s, 13/13 static pages generated, all 19 routes in the app table |
 
 Route table confirms: `/` static; API routes (`/api/plan`, `/api/notifications*`,
 `/api/calendar/*`, `/api/auth/*`) and `/calendar`, `/dashboard`, `/login`,

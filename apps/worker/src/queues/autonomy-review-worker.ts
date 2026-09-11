@@ -6,6 +6,7 @@ import { Worker, type Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 
 import type { AutonomyReviewJobPayload, QueueDefinitions } from '.';
+import { attachFailureLogging, WORKER_OPTIONS } from '.';
 
 /**
  * Autonomy review worker.
@@ -58,7 +59,7 @@ export const createAutonomyReviewWorker = ({
     maxReviewUsers,
   });
 
-  return new Worker<AutonomyReviewJobPayload>(
+  const worker = new Worker<AutonomyReviewJobPayload>(
     'space:autonomy-review',
     async (_job: Job<AutonomyReviewJobPayload>) => {
       const summary = await service.review();
@@ -71,6 +72,11 @@ export const createAutonomyReviewWorker = ({
         max: 2,
         duration: 120_000,
       },
+      lockDuration: WORKER_OPTIONS.lockDuration,
+      maxStalledCount: WORKER_OPTIONS.maxStalledCount,
     },
   );
+
+  attachFailureLogging(worker, logger);
+  return worker;
 };

@@ -25,6 +25,7 @@
     "@space/database": "workspace:*",
     "@space/engine": "workspace:*",
     "@space/logger": "workspace:*",
+    "@space/metrics": "workspace:*",
     "@space/notifications": "workspace:*",
     "@space/planning": "workspace:*",
     "@space/time": "workspace:*",

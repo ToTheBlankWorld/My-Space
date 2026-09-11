@@ -102,6 +102,30 @@ export const workerEnvSchema = z.object({
    * detects at-risk deadlines, classifies calendar drift, and delegates replans.
    */
   AUTONOMY_REVIEW_INTERVAL_MINUTES: z.coerce.number().int().min(1).max(60).default(5),
+
+  /**
+   * How often (in minutes) the maintenance job runs: data-retention prunes,
+   * expired-session and verification cleanup, calendar-event tombstone purging.
+   * Minimum 60, default 1440 (once a day).
+   */
+  MAINTENANCE_INTERVAL_MINUTES: z.coerce.number().int().min(60).max(1440).default(1440),
+
+  /**
+   * Retention windows, in days, for the rows the maintenance job prunes.
+   *
+   * The event log is additionally bounded below by the smallest commited outbox
+   * cursor, so reducing these windows can never break a lagging consumer.
+   */
+  EVENT_LOG_RETENTION_DAYS: z.coerce.number().int().min(7).max(3650).default(90),
+  AGENT_ACTION_RETENTION_DAYS: z.coerce.number().int().min(7).max(3650).default(90),
+  NOTIFICATION_RETENTION_DAYS: z.coerce.number().int().min(7).max(3650).default(90),
+  EMAIL_LOG_RETENTION_DAYS: z.coerce.number().int().min(7).max(3650).default(90),
+  /** How long an authenticated session is kept after it expires. */
+  SESSION_RETENTION_DAYS: z.coerce.number().int().min(1).max(3650).default(30),
+  /** How long a one-time OAuth state / verification is kept after it expires. */
+  VERIFICATION_RETENTION_DAYS: z.coerce.number().int().min(1).max(365).default(7),
+  /** How long a calendar-event tombstone is kept before being purged. */
+  CALENDAR_EVENT_RETENTION_DAYS: z.coerce.number().int().min(7).max(3650).default(90),
 });
 
 export type WorkerEnv = z.output<typeof workerEnvSchema>;

@@ -1,4 +1,5 @@
 import { createLogger, type Logger } from '@space/logger';
+import { createMetrics } from '@space/metrics';
 import { afterEach, beforeEach, describe, expect, it } from 'vitest';
 
 import { createHealthServer, type HealthServer, type RuntimeState } from '../health/server';
@@ -50,6 +51,37 @@ describe('health server', () => {
 
   it('returns 404 for unknown paths', async () => {
     const response = await fetch(`${origin}/admin`);
+
+    expect(response.status).toBe(404);
+  });
+
+  it('serves rendered metrics at /metrics when a registry is configured', async () => {
+    await server.close();
+
+    const metrics = createMetrics();
+    metrics.counter({ name: 'worker_jobs_failed_total', help: 'Failed jobs' }).inc({
+      queue: 'space:planning',
+    });
+
+    server = createHealthServer({
+      logger: silentLogger(),
+      state,
+      serviceName: 'test-worker',
+      metrics: { render: () => metrics.render() },
+    });
+    const port = await server.listen(0);
+
+    const response = await fetch(`http://127.0.0.1:${port}/metrics`);
+    expect(response.status).toBe(200);
+    expect(response.headers.get('content-type')).toMatch(/^text\/plain/);
+
+    const body = await response.text();
+    expect(body).toContain('# TYPE worker_jobs_failed_total counter');
+    expect(body).toContain('worker_jobs_failed_total{queue="space:planning"} 1');
+  });
+
+  it('returns 404 at /metrics when no registry is configured', async () => {
+    const response = await fetch(`${origin}/metrics`);
 
     expect(response.status).toBe(404);
   });

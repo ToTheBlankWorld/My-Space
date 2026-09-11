@@ -1,8 +1,9 @@
 import { NextResponse } from 'next/server';
 
+import { readJsonBody } from '@/lib/http';
+import { requireApiUser, requireSameOrigin, spendRateLimit, withApi } from '@/server/api';
 import { enqueueCalendarSync, calendarQueueAvailable } from '@/server/calendar-queue';
 import { getCalendarDatabase } from '@/server/calendar';
-import { requireUser } from '@/server/session';
 
 /**
  * POST /api/calendar/sync
@@ -16,19 +17,21 @@ import { requireUser } from '@/server/session';
  * Request body:
  *   { connectionId: string, calendarId?: string, fullSync?: boolean }
  */
-export const POST = async (request: Request) => {
-  const user = await requireUser();
+export const POST = withApi(async (request: Request) => {
+  const user = await requireApiUser();
+  requireSameOrigin(request);
+  spendRateLimit('calendarSync', user.user.id);
 
-  let body: { connectionId?: string; calendarId?: string; fullSync?: boolean };
-  try {
-    body = (await request.json()) as {
-      connectionId?: string;
-      calendarId?: string;
-      fullSync?: boolean;
-    };
-  } catch {
+  const parsed = await readJsonBody(request);
+  if (!parsed.ok) {
     return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
   }
+
+  const body = parsed.body as {
+    connectionId?: string;
+    calendarId?: string;
+    fullSync?: boolean;
+  };
 
   if (!body.connectionId) {
     return NextResponse.json({ error: 'connectionId is required.' }, { status: 400 });
@@ -78,4 +81,4 @@ export const POST = async (request: Request) => {
   }
 
   return NextResponse.json({ status: 'accepted' }, { status: 202 });
-};
+});

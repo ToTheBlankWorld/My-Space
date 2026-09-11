@@ -12,6 +12,7 @@ import { Worker, type Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 
 import type { NotificationJobPayload, QueueDefinitions } from '.';
+import { attachFailureLogging, WORKER_OPTIONS } from '.';
 
 /**
  * Notification queue worker.
@@ -125,8 +126,14 @@ export const createNotificationWorker = ({
         max: 20,
         duration: 60_000,
       },
+      lockDuration: WORKER_OPTIONS.lockDuration,
+      maxStalledCount: WORKER_OPTIONS.maxStalledCount,
     },
   );
+
+  // Log every job that exhausts its retries, then run the delivery dead-letter
+  // path below.
+  attachFailureLogging(worker, logger);
 
   // Dead-letter path: after the last attempt of a delivery job fails, finalize
   // the notification (mark FAILED + audit) so the row never sits as 'QUEUED'

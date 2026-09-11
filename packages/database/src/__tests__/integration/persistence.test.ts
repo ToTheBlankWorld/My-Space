@@ -398,6 +398,64 @@ describeIntegration('persistence', () => {
     ).resolves.toMatchObject({ status: 'PLANNED' });
   });
 
+  it('reports changed:false and writes nothing when the target status is already current', async () => {
+    const user = await newUser('transition-noop');
+    const task = await work.createTask(db, user.id, { title: 'Idle', status: 'PLANNED' });
+
+    const outcome = await work.transitionTaskStatus(db, user.id, task.id, 'PLANNED', clock.now(), {
+      trigger: 'user',
+      reason: 'user-completed-task',
+    });
+
+    expect(outcome).toEqual({ taskId: task.id, from: 'PLANNED', to: 'PLANNED', changed: false });
+    // No transition event, no agent action: a no-op must not manufacture an
+    // audit trail that claims a change happened.
+    expect(
+      await db.eventLog.count({
+        where: { userId: user.id, aggregateId: task.id, eventType: 'TASK_COMPLETED' },
+      }),
+    ).toBe(0);
+    expect(await db.agentAction.count({ where: { entityId: task.id } })).toBe(0);
+  });
+
+  it('keeps the audit trail truthful when two transitions race', async () => {
+    const user = await newUser('transition-race');
+    const task = await work.createTask(db, user.id, { title: 'Racing', status: 'IN_PROGRESS' });
+
+    // Both transitions are legal from IN_PROGRESS. Whichever lands first wins;
+    // the loser's compare-and-swap must not overwrite it, must not append a
+    // second transition event, and must not record a second agent action. The
+    // assertions hold on every interleaving, and each fails without the CAS.
+    const [toComplete, toMiss] = await Promise.all([
+      work.transitionTaskStatus(db, user.id, task.id, 'COMPLETED', clock.now(), {
+        trigger: 'user',
+        reason: 'user-completed-task',
+      }),
+      work.transitionTaskStatus(db, user.id, task.id, 'MISSED', clock.now(), {
+        trigger: 'autonomous',
+        reason: 'missed:elapsed-scheduled-block',
+      }),
+    ]);
+
+    const changed = [toComplete, toMiss].filter((outcome) => outcome.changed);
+    expect(changed).toHaveLength(1);
+
+    const finalRow = await db.task.findFirst({ where: { id: task.id } });
+    expect(finalRow?.status).toBe(changed[0]?.to);
+
+    expect(
+      await db.eventLog.count({
+        where: { userId: user.id, aggregateId: task.id, eventType: 'TASK_COMPLETED' },
+      }),
+    ).toBe(changed[0]?.to === 'COMPLETED' ? 1 : 0);
+    expect(
+      await db.eventLog.count({
+        where: { userId: user.id, aggregateId: task.id, eventType: 'TASK_MISSED' },
+      }),
+    ).toBe(changed[0]?.to === 'MISSED' ? 1 : 0);
+    expect(await db.agentAction.count({ where: { entityId: task.id } })).toBe(1);
+  });
+
   it('refuses to touch another user’s task', async () => {
     const [owner, attacker] = [await newUser('task-owner'), await newUser('task-attacker')];
     const task = await work.createTask(db, owner.id, { title: 'Private' });

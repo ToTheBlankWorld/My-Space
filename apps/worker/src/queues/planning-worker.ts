@@ -14,6 +14,7 @@ import type { Redis } from 'ioredis';
 import { computePlanDiff } from '@space/autonomy';
 
 import type { PlanningJobPayload } from '.';
+import { attachFailureLogging, WORKER_OPTIONS } from '.';
 
 /**
  * Planning worker processor.
@@ -54,7 +55,7 @@ export const createPlanningWorker = ({
   connection,
   maxTasksPerPlan = DEFAULT_TASKS,
 }: PlanningWorkerDeps): Worker => {
-  return new Worker<PlanningJobPayload>(
+  const worker = new Worker<PlanningJobPayload>(
     'space:planning',
     async (job: Job<PlanningJobPayload>) => {
       const { userId, date, spaceId, planVersion, trigger } = job.data;
@@ -106,14 +107,27 @@ export const createPlanningWorker = ({
         });
 
         // 2. Run the engine. Validation failure is permanent — retrying will not
-        //    fix it — so it surfaces as a failed job rather than a retry loop.
+        //    fix it — so it is recorded once and the job completes instead of
+        //    burning its retry budget on the same bad input.
         const validation = validatePlanningInput(input);
         if (!validation.valid) {
           const messages = validation.violations
             .filter((v) => v.severity === 'error')
             .map((v) => `${v.field}: ${v.message}`)
             .join('; ');
-          throw new Error(`planning input invalid: ${messages}`);
+          await audit.appendEvent(db, userId, {
+            eventType: 'PLANNING_FAILED',
+            aggregateType: 'SPACE',
+            aggregateId: spaceId,
+            occurredAt: clock.now(),
+            correlationId,
+            payload: {
+              message: `planning input invalid: ${messages}`.slice(0, 500),
+              reason: 'validation',
+            },
+          });
+          jobLogger.error({ violations: validation.violations }, 'planning skipped: invalid input');
+          return { success: true, failed: 'validation' };
         }
 
         const result = plan(input, clock);
@@ -214,6 +228,11 @@ export const createPlanningWorker = ({
         max: 10,
         duration: 60_000,
       },
+      lockDuration: WORKER_OPTIONS.lockDuration,
+      maxStalledCount: WORKER_OPTIONS.maxStalledCount,
     },
   );
+
+  attachFailureLogging(worker, logger);
+  return worker;
 };

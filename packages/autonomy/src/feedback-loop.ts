@@ -145,39 +145,10 @@ const detectReplanCycles = async (
     take: 50,
   });
 
-  // Count alternations: replan → user change → replan.
+  // Cycle detection: count user changes that happened within the suppression
+  // window after an autonomous replan — a replan→user-change→replan pattern.
   let cycles = 0;
-  let lastWasReplan = false;
 
-  const allEvents = [
-    ...replanEvents.map((e) => ({ time: e.occurredAt.getTime(), type: 'replan' as const })),
-    ...userChanges
-      .filter((e) => {
-        const payload = e.payload as { trigger?: string } | null;
-        return payload?.trigger === 'user';
-      })
-      .map((e) => ({ time: e.occurredAt.getTime(), type: 'user-change' as const })),
-  ].sort((a, b) => a.time - b.time);
-
-  for (const event of allEvents) {
-    if (event.type === 'replan') {
-      if (lastWasReplan) {
-        // Two replans without a user change in between — not a cycle.
-        continue;
-      }
-      lastWasReplan = true;
-    } else {
-      // User change.
-      if (lastWasReplan) {
-        // replan → user change is one half of a cycle.
-        // The next replan will complete the cycle.
-      }
-      lastWasReplan = false;
-    }
-  }
-
-  // Simplified cycle detection: count user changes that happened within
-  // SUPPRESSION_WINDOW_MS after an autonomous replan.
   for (const userChange of userChanges) {
     const payload = userChange.payload as { trigger?: string } | null;
     if (payload?.trigger !== 'user') continue;

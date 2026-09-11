@@ -8,7 +8,7 @@ import {
   getCalendarDatabase,
   getGoogleOAuthConfig,
 } from '@/server/calendar';
-import { requireUser } from '@/server/session';
+import { requireApiUser, requireSameOrigin, spendRateLimit, withApi } from '@/server/api';
 
 /**
  * GET /api/calendar/connection
@@ -16,8 +16,8 @@ import { requireUser } from '@/server/session';
  * Returns the calendar connections for the authenticated user, each with its
  * calendar count. Nothing token-shaped is ever returned.
  */
-export const GET = async (): Promise<NextResponse> => {
-  const user = await requireUser();
+export const GET = withApi(async () => {
+  const user = await requireApiUser();
   const db = getCalendarDatabase();
 
   const connections = await db.calendarConnection.findMany({
@@ -36,7 +36,7 @@ export const GET = async (): Promise<NextResponse> => {
   });
 
   return NextResponse.json({ connections });
-};
+});
 
 /**
  * POST /api/calendar/connection
@@ -49,8 +49,10 @@ export const GET = async (): Promise<NextResponse> => {
  * The `state` value is stored in a short-lived HttpOnly cookie and must come
  * back unchanged on the callback, or the authorization code is discarded.
  */
-export const POST = async () => {
-  await requireUser();
+export const POST = withApi(async (request: Request) => {
+  const user = await requireApiUser();
+  requireSameOrigin(request);
+  spendRateLimit('calendarConnect', user.user.id);
   const cfg = getGoogleOAuthConfig();
 
   const state = createOAuthState();
@@ -70,4 +72,4 @@ export const POST = async () => {
   });
 
   return NextResponse.json({ url });
-};
+});

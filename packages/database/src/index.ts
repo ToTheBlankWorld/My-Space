@@ -58,6 +58,7 @@ export * as calendar from './repositories/calendar';
 export * as delivery from './repositories/delivery';
 export * as reminders from './repositories/reminders';
 export * as audit from './repositories/audit';
+export * as retention from './repositories/retention';
 
 // Prisma's generated namespace, for callers that need a filter type or an enum
 // value. Re-exported from one place so no consumer reaches into `src/generated`.

@@ -1,8 +1,7 @@
 import { NextResponse } from 'next/server';
-import type { NextRequest } from 'next/server';
 
+import { requireApiUser, withApi } from '@/server/api';
 import { getNotificationsService } from '@/server/notifications';
-import { getOptionalUser } from '@/server/session';
 
 /**
  * GET /api/notifications
@@ -14,11 +13,8 @@ import { getOptionalUser } from '@/server/session';
  * read surface for in-app notifications: the email log and provider internals
  * are never exposed.
  */
-export const GET = async (request: NextRequest): Promise<NextResponse> => {
-  const context = await getOptionalUser();
-  if (!context) {
-    return NextResponse.json({ error: 'Authentication required.' }, { status: 401 });
-  }
+export const GET = withApi(async (request: Request): Promise<NextResponse> => {
+  const context = await requireApiUser();
 
   const unreadOnly = new URL(request.url).searchParams.get('unread') === '1';
 
@@ -43,4 +39,4 @@ export const GET = async (request: NextRequest): Promise<NextResponse> => {
       deliveryState: row.deliveryState,
     })),
   });
-};
+});

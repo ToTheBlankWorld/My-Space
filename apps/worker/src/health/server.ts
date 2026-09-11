@@ -29,6 +29,14 @@ export interface HealthServerOptions {
    * restart the process.
    */
   probes?: readonly ReadinessProbe[];
+  /**
+   * Optional Prometheus exposition served at `/metrics`.
+   *
+   * Like the probes it is unauthenticated — the health server binds to an
+   * internal port, not the public surface, and the exposition contains no
+   * request data.
+   */
+  metrics?: { render: () => string };
 }
 
 export interface HealthServer {
@@ -65,6 +73,7 @@ export const createHealthServer = ({
   state,
   serviceName,
   probes = [],
+  metrics,
 }: HealthServerOptions): HealthServer => {
   const handle = (request: IncomingMessage, response: ServerResponse): void => {
     const path = (request.url ?? '/').split('?')[0];
@@ -85,9 +94,33 @@ export const createHealthServer = ({
       case '/readyz':
         void respondWithReadiness(response);
         return;
+      case '/metrics':
+        respondWithMetrics(response);
+        return;
       default:
         sendJson(response, 404, { error: 'not_found' });
     }
+  };
+
+  /**
+   * Answers `/metrics`.
+   *
+   * When no registry is configured the route responds 404 so a probe that
+   * targets it fails loudly instead of silently scraping nothing.
+   */
+  const respondWithMetrics = (response: ServerResponse): void => {
+    if (!metrics) {
+      sendJson(response, 404, { error: 'not_found' });
+      return;
+    }
+
+    const body = metrics.render();
+    response.writeHead(200, {
+      'content-type': 'text/plain; version=0.0.4; charset=utf-8',
+      'content-length': Buffer.byteLength(body),
+      'cache-control': 'no-store',
+    });
+    response.end(body);
   };
 
   /**

@@ -5,8 +5,9 @@ import {
 } from '@space/calendar';
 import { NextResponse } from 'next/server';
 
+import { readJsonBody } from '@/lib/http';
+import { requireApiUser, requireSameOrigin, spendRateLimit, withApi } from '@/server/api';
 import { getCalendarDatabase, getCalendarKeyring, getCalendarLogger } from '@/server/calendar';
-import { requireUser } from '@/server/session';
 
 /**
  * POST /api/calendar/disconnect
@@ -19,18 +20,20 @@ import { requireUser } from '@/server/session';
  * Request body:
  *   { connectionId: string }
  */
-export const POST = async (request: Request) => {
-  const user = await requireUser();
+export const POST = withApi(async (request: Request) => {
+  const user = await requireApiUser();
+  requireSameOrigin(request);
+  spendRateLimit('calendarDisconnect', user.user.id);
   const db = getCalendarDatabase();
   const keyring = getCalendarKeyring();
   const logger = getCalendarLogger();
 
-  let body: { connectionId?: string };
-  try {
-    body = (await request.json()) as { connectionId?: string };
-  } catch {
+  const parsed = await readJsonBody(request);
+  if (!parsed.ok) {
     return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
   }
+
+  const body = parsed.body as { connectionId?: string };
 
   if (!body.connectionId) {
     return NextResponse.json({ error: 'connectionId is required.' }, { status: 400 });
@@ -75,4 +78,4 @@ export const POST = async (request: Request) => {
   });
 
   return NextResponse.json({ status: 'disconnected' });
-};
+});

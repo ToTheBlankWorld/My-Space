@@ -1,7 +1,8 @@
 import { NextResponse } from 'next/server';
 
+import { readJsonBody } from '@/lib/http';
+import { requireApiUser, requireSameOrigin, spendRateLimit, withApi } from '@/server/api';
 import { getNotificationsService } from '@/server/notifications';
-import { getOptionalUser } from '@/server/session';
 
 /**
  * POST /api/notifications/read
@@ -14,19 +15,17 @@ import { getOptionalUser } from '@/server/session';
  * already read or does not belong to the user); `all` returns the number of
  * rows changed.
  */
-export const POST = async (request: Request): Promise<NextResponse> => {
-  const context = await getOptionalUser();
-  if (!context) {
-    return NextResponse.json({ error: 'Authentication required.' }, { status: 401 });
-  }
+export const POST = withApi(async (request: Request) => {
+  const context = await requireApiUser();
+  requireSameOrigin(request);
+  spendRateLimit('notificationRead', context.user.id);
 
-  let body: { id?: unknown; all?: unknown };
-  try {
-    body = (await request.json()) as { id?: unknown; all?: unknown };
-  } catch {
+  const result = await readJsonBody(request);
+  if (!result.ok) {
     return NextResponse.json({ error: 'Invalid JSON body.' }, { status: 400 });
   }
 
+  const body = result.body as { id?: unknown; all?: unknown };
   const service = getNotificationsService();
 
   if (body.all === true) {
@@ -43,4 +42,4 @@ export const POST = async (request: Request): Promise<NextResponse> => {
     { error: 'Provide `{ "id": string }` or `{ "all": true }`.' },
     { status: 400 },
   );
-};
+});

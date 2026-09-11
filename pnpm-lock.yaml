@@ -210,6 +210,9 @@ importers:
       '@space/logger':
         specifier: workspace:*
         version: link:../../packages/logger
+      '@space/metrics':
+        specifier: workspace:*
+        version: link:../../packages/metrics
       '@space/notifications':
         specifier: workspace:*
         version: link:../../packages/notifications
@@ -579,6 +582,24 @@ importers:
       '@types/node':
         specifier: 'catalog:'
         version: 26.5.0
+      eslint:
+        specifier: 'catalog:'
+        version: 10.10.0(jiti@2.7.0)
+      typescript:
+        specifier: 'catalog:'
+        version: 6.0.3
+      vitest:
+        specifier: 'catalog:'
+        version: 5.0.0(@types/node@26.5.0)(jsdom@30.0.1(@noble/hashes@2.4.0))(vite@8.2.2(@types/node@26.5.0)(esbuild@0.28.2)(jiti@2.7.0)(tsx@4.23.13))
+
+  packages/metrics:
+    devDependencies:
+      '@space/eslint-config':
+        specifier: workspace:*
+        version: link:../eslint-config
+      '@space/typescript-config':
+        specifier: workspace:*
+        version: link:../typescript-config
       eslint:
         specifier: 'catalog:'
         version: 10.10.0(jiti@2.7.0)

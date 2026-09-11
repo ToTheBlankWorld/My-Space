@@ -116,3 +116,33 @@ export const scheduleAutonomyReview = async ({
 
   logger.info({ intervalMinutes }, 'autonomy review scheduled');
 };
+
+/**
+ * Registers the single repeatable maintenance job.
+ *
+ * De-duplicated by `jobId: space:maintenance` so a fleet of workers only ever
+ * holds one schedule. The worker itself runs with `concurrency: 1`, so prunes
+ * never contend with themselves across processes.
+ */
+export interface ScheduleMaintenanceInput {
+  queues: QueueDefinitions;
+  intervalMinutes: number;
+  logger: Logger;
+}
+
+export const scheduleMaintenance = async ({
+  queues,
+  intervalMinutes,
+  logger,
+}: ScheduleMaintenanceInput): Promise<void> => {
+  await queues.maintenance.add(
+    'prune-retained-data',
+    { task: 'prune-retained-data' },
+    {
+      repeat: { every: intervalMinutes * 60_000 },
+      jobId: 'space:maintenance',
+    },
+  );
+
+  logger.info({ intervalMinutes }, 'maintenance schedule registered');
+};

@@ -2,6 +2,7 @@ import { createKeyring } from '@space/auth';
 import type { GoogleClientCredentials } from '@space/calendar';
 import { loadWorkerEnv } from '@space/config/worker';
 import { createLogger } from '@space/logger';
+import { createMetrics } from '@space/metrics';
 import { createEmailProvider } from '@space/notifications';
 import { SystemClock } from '@space/time';
 import type { Redis } from 'ioredis';
@@ -11,6 +12,7 @@ import { createHealthServer, type ReadinessProbe, type RuntimeState } from './he
 import { installProcessSignalHandlers } from './lifecycle/process-signals';
 import { ShutdownController } from './lifecycle/shutdown';
 import {
+  attachJobMetrics,
   createQueues,
   createRedisConnection,
   createRedisHealth,
@@ -20,7 +22,12 @@ import { createCalendarSyncWorker } from './queues/calendar-sync-worker';
 import { createMaintenanceWorker } from './queues/maintenance-worker';
 import { createNotificationWorker } from './queues/notification-worker';
 import { createPlanningWorker } from './queues/planning-worker';
-import { scheduleAutoSyncs, scheduleNotificationSweep, scheduleAutonomyReview } from './scheduler';
+import {
+  scheduleAutoSyncs,
+  scheduleNotificationSweep,
+  scheduleAutonomyReview,
+  scheduleMaintenance,
+} from './scheduler';
 import { createAutonomyReviewWorker } from './queues/autonomy-review-worker';
 
 /**
@@ -44,6 +51,9 @@ const bootstrap = async (): Promise<void> => {
   });
 
   const state: RuntimeState = { ready: false };
+
+  // Process-lifetime metrics; exposed at /metrics on the health server.
+  const metrics = createMetrics();
 
   const shutdown = new ShutdownController({ logger, timeoutMs: env.SHUTDOWN_TIMEOUT_MS });
 
@@ -123,6 +133,7 @@ const bootstrap = async (): Promise<void> => {
         intervalMinutes: env.CALENDAR_SYNC_INTERVAL_MINUTES,
         logger,
       });
+      attachJobMetrics(calendarSyncWorker, metrics, 'space:calendar-sync');
       logger.info('calendar sync worker started');
     } else {
       logger.warn(
@@ -135,7 +146,35 @@ const bootstrap = async (): Promise<void> => {
       );
     }
 
-    maintenanceWorker = createMaintenanceWorker({ logger, connection: redisConnection });
+    if (database) {
+      maintenanceWorker = createMaintenanceWorker({
+        logger,
+        connection: redisConnection,
+        db: database.client,
+        clock: new SystemClock(),
+        metrics,
+        retention: {
+          eventLogDays: env.EVENT_LOG_RETENTION_DAYS,
+          agentActionDays: env.AGENT_ACTION_RETENTION_DAYS,
+          notificationDays: env.NOTIFICATION_RETENTION_DAYS,
+          emailLogDays: env.EMAIL_LOG_RETENTION_DAYS,
+          sessionDays: env.SESSION_RETENTION_DAYS,
+          verificationDays: env.VERIFICATION_RETENTION_DAYS,
+          calendarEventTombstoneDays: env.CALENDAR_EVENT_RETENTION_DAYS,
+        },
+      });
+
+      await scheduleMaintenance({
+        queues,
+        intervalMinutes: env.MAINTENANCE_INTERVAL_MINUTES,
+        logger,
+      });
+      attachJobMetrics(maintenanceWorker, metrics, 'space:maintenance');
+
+      logger.info('maintenance worker started');
+    } else {
+      logger.warn('maintenance worker disabled: database configuration missing');
+    }
 
     // The planning worker needs only the database and a clock; it has no OAuth
     // or provider dependencies, so it starts whenever persistence is present.
@@ -147,6 +186,7 @@ const bootstrap = async (): Promise<void> => {
         clock: new SystemClock(),
         maxTasksPerPlan: env.PLANNING_MAX_TASKS_PER_PLAN,
       });
+      attachJobMetrics(planningWorker, metrics, 'space:planning');
       logger.info('planning worker started');
     } else {
       logger.warn('planning worker disabled: database configuration missing');
@@ -179,6 +219,7 @@ const bootstrap = async (): Promise<void> => {
         intervalMinutes: env.NOTIFICATION_SWEEP_INTERVAL_MINUTES,
         logger,
       });
+      attachJobMetrics(notificationWorker, metrics, 'space:notifications');
 
       logger.info(
         { emailProviderConfigured: emailProvider !== null },
@@ -206,7 +247,7 @@ const bootstrap = async (): Promise<void> => {
         intervalMinutes: env.AUTONOMY_REVIEW_INTERVAL_MINUTES,
         logger,
       });
-
+      attachJobMetrics(autonomyReviewWorker, metrics, 'space:autonomy-review');
       logger.info('autonomy review worker started');
     } else {
       logger.warn('autonomy review worker disabled: database configuration missing');
@@ -245,7 +286,13 @@ const bootstrap = async (): Promise<void> => {
   }
 
   // Health server: always started.
-  const health = createHealthServer({ logger, state, serviceName: env.WORKER_NAME, probes });
+  const health = createHealthServer({
+    logger,
+    state,
+    serviceName: env.WORKER_NAME,
+    probes,
+    metrics: { render: () => metrics.render() },
+  });
   await health.listen(env.HEALTH_PORT);
   shutdown.register({ name: 'health-server', dispose: () => health.close() });
 
