@@ -3,13 +3,17 @@
 **Space is a personal planning platform.** Tasks, deadlines, calendar events and reminders live in
 one canonical timeline, continuously resolved by a deterministic scheduling engine.
 
-This repository is at **Stage 03 — Identity**. What exists today is the engineering foundation (a
-Turborepo monorepo, shared contracts, a polished marketing surface, an independently deployable
-worker, CI), a PostgreSQL schema with migrations, a deterministic clock, timezone-safe calendar
-arithmetic, a server-only database package, and the authentication layer: Google sign-in, database
-sessions, an encrypted credential store, onboarding that feeds the engine, and a deterministic
-end-to-end route for testing. The Space Engine, calendar integration and background jobs are
-scheduled for later stages and are **not** implemented here.
+This repository is at **Stage 12 — Production Deployment & Live Integration**. The Space Engine
+(prioritisation, scheduling, conflict resolution, workload enforcement), Google Calendar
+synchronisation, a notification and email delivery layer (AgentMail), and an autonomous
+feedback loop (drift detection, staleness, deadline escalation, automated reschedule proposals)
+are all implemented and tested. Deploy configs for Vercel, Railway, Supabase and Upstash are
+committed and verified locally. Every claim below carries an explicit verification label
+(`VERIFIED LOCALLY`, `VERIFIED IN CI`, etc.); nothing is presented as deployed until it
+actually is.
+
+> **No AI.** There is no LLM, generative model, ML system or AI API anywhere in this project, and
+> none will be introduced. Scheduling is a constraint problem, not a prediction problem.
 
 ---
 
@@ -25,10 +29,10 @@ scheduled for later stages and are **not** implemented here.
 - [Environment variables](#environment-variables)
 - [Database](#database)
 - [Development commands](#development-commands)
-- [Database](#database)
 - [Testing](#testing)
 - [Build](#build)
 - [Deployment model](#deployment-model)
+- [Production readiness](#production-readiness)
 - [Adding a new package](#adding-a-new-package)
 - [Conventions](#conventions)
 
@@ -43,24 +47,21 @@ correct as the day changes.
 That responsibility is discharged by the **Space Engine**: a set of deterministic units that resolve
 priorities, deadlines, conflicts and workload into a concrete schedule.
 
-| #   | Engine                   | Responsibility                                   |
-| --- | ------------------------ | ------------------------------------------------ |
-| 01  | Planning                 | Turns intent into candidate work for a horizon   |
-| 02  | Scheduling               | Places work into concrete time blocks            |
-| 03  | Priority                 | Orders competing work under one ruleset          |
-| 04  | Conflict                 | Detects and resolves overlapping commitments     |
-| 05  | Deadline                 | Works backwards from dates that cannot move      |
-| 06  | Rescheduling             | Repairs the plan with the smallest possible edit |
-| 07  | Workload                 | Enforces capacity so days stay achievable        |
-| 08  | Calendar synchronisation | Reconciles Space with external calendars         |
-| 09  | Notification             | Decides what is worth interrupting a user for    |
-| 10  | Monitoring               | Observes drift between the plan and reality      |
+| #   | Engine                   | Responsibility                                   | Status      |
+| --- | ------------------------ | ------------------------------------------------ | ----------- |
+| 01  | Planning                 | Turns intent into candidate work for a horizon   | Implemented |
+| 02  | Scheduling               | Places work into concrete time blocks            | Implemented |
+| 03  | Priority                 | Orders competing work under one ruleset          | Implemented |
+| 04  | Conflict                 | Detects and resolves overlapping commitments     | Implemented |
+| 05  | Deadline                 | Works backwards from dates that cannot move      | Implemented |
+| 06  | Rescheduling             | Repairs the plan with the smallest possible edit | Implemented |
+| 07  | Workload                 | Enforces capacity so days stay achievable        | Implemented |
+| 08  | Calendar synchronisation | Reconciles Space with external calendars         | Implemented |
+| 09  | Notification             | Decides what is worth interrupting a user for    | Implemented |
+| 10  | Monitoring               | Observes drift between the plan and reality      | Implemented |
 
 The engine is **rule-based and deterministic**. The same inputs always produce the same schedule, and
 every decision traces back to the rule that produced it.
-
-> **No AI.** There is no LLM, generative model, ML system or AI API anywhere in this project, and
-> none will be introduced. Scheduling is a constraint problem, not a prediction problem.
 
 ---
 
@@ -71,7 +72,7 @@ every decision traces back to the rule that produced it.
 2. **The web application and the worker are independently deployable.** Neither imports the other.
 3. **Background work never depends on serverless execution.** Long-running and retryable work belongs
    to the worker process, not to a request handler.
-4. **No in-memory timers for production scheduling.** Durable scheduling will be handled by BullMQ on
+4. **No in-memory timers for production scheduling.** Durable scheduling is handled by BullMQ on
    Redis.
 5. **Domain logic lives outside React components.** Components render; packages decide.
 6. **External integrations are isolated behind dedicated packages**, so a provider can be replaced
@@ -109,7 +110,11 @@ flowchart TB
         CONFIG["@space/config"]
         LOGGER["@space/logger"]
         DB["@space/database"]
-        UIPKG["@space/ui"]
+        CALENDAR["@space/calendar"]
+        ENGINE["@space/engine"]
+        PLANNING["@space/planning"]
+        AUTONOMY["@space/autonomy"]
+        NOTIF["@space/notifications"]
     end
 
     subgraph data["Managed infrastructure"]
@@ -117,7 +122,7 @@ flowchart TB
         REDIS[("Upstash Redis<br/>BullMQ")]
     end
 
-    subgraph external["External integrations, later stages"]
+    subgraph external["External integrations"]
         GCAL["Google Calendar"]
         MAIL["AgentMail"]
     end
@@ -128,25 +133,18 @@ flowchart TB
     DB --> PG
     WEB -.-> REDIS
     WORKER -.-> REDIS
-    WORKER -.-> GCAL
-    WORKER -.-> MAIL
+    WORKER --> GCAL
+    WORKER --> MAIL
 
     WEB --- shared
     WORKER --- shared
-    UI --- UIPKG
-
-    classDef planned stroke-dasharray: 4 4;
-    class REDIS,GCAL,MAIL planned;
+    UI --- shared
 ```
 
-Solid edges exist today. Dashed nodes are planned for later stages and have no code in this
-repository yet.
-
-**Why two runtimes.** Planning work is continuous, retryable and occasionally long-running:
-reconciling calendars, recomputing schedules, sending notifications. Serverless functions are the
-wrong shape for that — they have execution limits and no durable process identity. The worker is an
-ordinary Node process that owns that work, and the Next.js application stays a request/response
-surface.
+All edges are implemented. The web app and worker are separate processes — neither imports the
+other. Web handles request/response (landing, auth, dashboard, planner, calendar connect,
+notifications, settings); worker owns all durable, retryable background work: calendar sync,
+notification delivery, retention maintenance, and the autonomous feedback loop.
 
 ---
 
@@ -158,20 +156,30 @@ space/
 │   ├── web/                    Next.js 16 application (App Router)
 │   └── worker/                 Standalone Node.js background runtime
 ├── packages/
+│   ├── autonomy/               Staleness, drift detection, reschedule proposals
+│   ├── auth/                   Sessions, Google sign-in, AEAD-encrypted tokens
+│   ├── calendar/               Google OAuth flows, token custody, sync engine
 │   ├── config/                 Environment schemas and validated configuration
-│   ├── auth/                 Authentication, sessions and credential encryption
-│   ├── database/               Prisma schema, migrations, seed, repositories
+│   ├── database/               Prisma schema, migrations, repositories
+│   ├── engine/                 Deterministic scheduling engine (priority, conflict, deadline, workload)
 │   ├── eslint-config/          Shared flat ESLint configurations
-│   ├── logger/                 Structured logging (pino)
+│   ├── logger/                 Structured logging (pino) with credential redaction
+│   ├── metrics/                Zero-dependency Prometheus registry
+│   ├── notifications/          Delivery policies, sweep, templates, AgentMail provider
+│   ├── planning/               Plan-my-day service, outbox, day-state reader
 │   ├── time/                   Clock abstraction and timezone-safe calendar math
 │   ├── types/                  Framework-free domain types and vocabulary
 │   ├── typescript-config/      Shared tsconfig bases
 │   ├── ui/                     React component library (shadcn/ui foundation)
 │   └── validation/             Zod schemas and boundary parsing
-├── docs/authentication.md   Identity, session model, E2E sign-in, security
-├── docs/database.md            Schema, timezone rules, migrations, indexing
-├── docker-compose.yml          Local PostgreSQL for migrations and integration tests
+├── docs/
+│   ├── authentication.md       Identity, session model, E2E sign-in, security
+│   ├── database.md             Schema, timezone rules, migrations, indexing
+│   └── stage-12-production-deployment.md  Full deployment audit, runbooks, A–Z report
 ├── .github/workflows/ci.yml    Lint, typecheck, test, build, integration, e2e
+├── apps/web/vercel.json        Vercel deploy config
+├── railway.json                Railway worker deploy config
+├── docker-compose.yml          Local PostgreSQL for migrations and integration tests
 ├── turbo.json                  Task graph and caching
 └── pnpm-workspace.yaml         Workspace members and the version catalog
 ```
@@ -180,12 +188,6 @@ Packages are **internal source packages**: they export TypeScript directly and a
 consumer (Next.js via `transpilePackages`, the worker via `tsup`). There is no per-package build
 step, so there are no stale `dist/` artifacts and no build ordering to get wrong.
 
-Only packages with real, load-bearing content exist today. The future modules named in the product
-plan — `database`, `auth`, `space-engine`, `calendar`, `agentmail`, `queue`, `events`,
-`notifications`, `analytics`, `telemetry` — are deliberately **not** scaffolded as empty
-placeholders; see [Adding a new package](#adding-a-new-package) for the short process of adding one
-when it has something to hold.
-
 ---
 
 ## Applications
@@ -193,56 +195,70 @@ when it has something to hold.
 ### `apps/web` — Next.js application
 
 - Next.js 16 App Router, React 19, strict TypeScript.
-- Tailwind CSS v4 with design tokens defined in `src/app/globals.css`; the palette is near
-  monochrome with a single warm accent, so hierarchy comes from typography and spacing.
-- Components from `@space/ui` (shadcn/ui conventions: `cva` variants, Radix `Slot` for `asChild`).
-- Geist Sans / Geist Mono, self-hosted through the `geist` package — no runtime font fetch.
-- Motion (`motion/react`) used only for entrance reveals, and skipped entirely for users who prefer
-  reduced motion.
-- Accessibility: semantic landmarks, a skip link, visible focus rings, no anchor nested in a button.
-- Security headers (`X-Content-Type-Options`, `X-Frame-Options`, `Referrer-Policy`,
-  `Permissions-Policy`) are applied to every response from `next.config.ts`.
+- Tailwind CSS v4 with design tokens in `src/app/globals.css`.
+- Geist Sans / Geist Mono, self-hosted — no runtime font fetch.
+- Entrance animations via `motion/react`; skipped for users who prefer reduced motion.
+- CSP, HSTS, and all security headers applied from `next.config.ts` / `vercel.json`.
 
-The landing page is the public surface. Behind it sits the authentication flow (Google sign-in at
-`/login`, onboarding at `/onboarding`, a session-gated dashboard at `/dashboard`). The landing header
-reads the session on the server and renders "Sign in" or "Open Space" accordingly, so no client
-round-trip is needed to know the visitor's state.
+**Public surface:** landing page at `/`.
+**Authenticated surfaces:**
+
+| Route                        | Purpose                                                 |
+| ---------------------------- | ------------------------------------------------------- |
+| `/login`                     | Google sign-in                                          |
+| `/onboarding`                | Account setup (feeds the engine)                        |
+| `/dashboard`                 | Today's overview                                        |
+| `/space` and `/space/[date]` | Full planner with timeline, tasks, priority, conflicts  |
+| `/calendar`                  | Connect/disconnect Google Calendar, trigger manual sync |
+| `/notifications`             | Notification inbox, read/unread                         |
+| `/settings`                  | Preferences and autonomy controls                       |
+
+Server API routes: `/api/auth/*` (better-auth), `/api/plan` (day planner), `/api/calendar/*`
+(status, sync, connect, disconnect, callback), `/api/notifications/*`, `/api/healthz`,
+`/api/readyz`.
 
 ### `apps/worker` — background runtime
 
-An ordinary long-lived Node.js process with **no dependency on the Next.js runtime**. Today it:
+A long-lived Node.js process with **no dependency on the Next.js runtime**. Today it:
 
-- loads and validates its environment (`@space/config/worker`),
-- initialises structured logging (`@space/logger`),
-- serves `GET /healthz` (liveness) and `GET /readyz` (readiness) for the deployment platform,
-- shuts down gracefully: on `SIGINT`/`SIGTERM` it stops advertising readiness, releases resources in
-  reverse registration order, and gives up after `SHUTDOWN_TIMEOUT_MS`,
-- treats an unhandled rejection or uncaught exception as fatal and exits non-zero so the platform can
-  restart it cleanly.
-
-It contains **no queue consumers and no business logic**. BullMQ, Redis and the Space Engine attach
-to the same lifecycle in later stages.
-
-The health server is not decoration: it is what a container platform polls, and it gives the process
-a legitimate reason to hold the event loop open — instead of the common anti-pattern of an idle
-`setInterval`.
+- boots and validates its environment (`@space/config/worker`)
+- opens a database pool when `DATABASE_URL` is set, and a Redis pool when `REDIS_URL` is set
+- creates **five BullMQ queues** (`space:*`) and registers six consumers:
+  - `planning-completed` — persists plan writes and enqueues notifications
+  - `calendar-sync` — syncs connected Google Calendars per auto-sync schedule
+  - `notification` — delivers outbound email via AgentMail
+  - `maintenance` — retention prunes, expired session cleanup, event tombstone purging
+  - `autonomy-review` — drift detection, staleness, deadline escalation, reschedule proposals
+- runs a **deterministic scheduler** with idempotent repeatable jobs (`space:auto-sync:*`,
+  `space:autonomy-review`, `space:notification-sweep`, `space:maintenance`)
+- exposes `GET /healthz`, `GET /readyz` and `GET /metrics` (Prometheus text exposition) for
+  deployment-platform monitoring
+- shuts down gracefully: on `SIGINT`/`SIGTERM` it stops advertising readiness, drains in-flight
+  jobs in reverse registration order, and gives up after `SHUTDOWN_TIMEOUT_MS`
+- treats an unhandled rejection or uncaught exception as fatal and exits non-zero
 
 ---
 
 ## Packages
 
-| Package                    | Runtime                     | Responsibility                                                                                                                                                                                                                      |
-| -------------------------- | --------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| `@space/types`             | isomorphic, no dependencies | Branded scalars (`IsoDateTime`, `TimeZone`, `DurationMinutes`), the `Result` union, the log-level vocabulary. Framework-free, so both runtimes can depend on it without pulling anything in.                                        |
-| `@space/validation`        | isomorphic                  | Zod schemas that turn untrusted input into branded types, plus `parseOrThrow` / `ValidationError`. Boundary errors list every issue and never echo the offending value, so a bad secret cannot leak into a log.                     |
-| `@space/config`            | server only                 | Environment schemas per runtime (`/web`, `/worker`), validated eagerly at module load so a misconfigured process fails at boot rather than on first request. Includes a runtime guard that throws if evaluated in a browser bundle. |
-| `@space/logger`            | Node only                   | Structured JSON logging on stdout with centralised redaction of credential-shaped fields. Writes synchronously so shutdown records are never lost on exit.                                                                          |
-| `@space/ui`                | React                       | Component foundation: `cn()` (clsx + tailwind-merge) and the `Button` primitive with `cva` variants and `asChild` support.                                                                                                          |
-| `@space/time`              | isomorphic                  | The `Clock` abstraction (`SystemClock`, `FixedClock`) and every timezone conversion in the product: calendar dates, DST-aware day ranges, wall-clock times. The only sanctioned reader of host time.                                |
-| `@space/database`          | server only                 | Prisma schema, migrations, seed and repositories. Ownership-scoped, paginated, and idempotent where a sync depends on it. See [docs/database.md](docs/database.md).                                                                 |
-| `@space/auth`              | server only                 | Identity, sessions and credential protection. Google sign-in, database sessions, encrypted OAuth tokens, onboarding writes, a deterministic E2E route, and rate-limiting. See [docs/authentication.md](docs/authentication.md).     |
-| `@space/typescript-config` | tooling                     | `base`, `node`, `react-library` and `nextjs` tsconfig bases.                                                                                                                                                                        |
-| `@space/eslint-config`     | tooling                     | Flat ESLint configs: `base` (type-aware), `node`, `react`, `next`.                                                                                                                                                                  |
+| Package                    | Runtime             | Responsibility                                                                                                                           |
+| -------------------------- | ------------------- | ---------------------------------------------------------------------------------------------------------------------------------------- |
+| `@space/types`             | isomorphic          | Branded scalars (`IsoDateTime`, `TimeZone`, `DurationMinutes`), the `Result` union, log-level vocabulary                                 |
+| `@space/validation`        | isomorphic          | Zod schemas that turn untrusted input into branded types; boundary errors never echo input                                               |
+| `@space/config`            | server only         | Environment schemas per runtime, validated eagerly at module load so misconfigured processes fail at boot                                |
+| `@space/logger`            | Node only           | Structured JSON logging on stdout with credential-shaped-field redaction; synchronous shutdown writes                                    |
+| `@space/time`              | isomorphic          | `Clock` abstraction (`SystemClock`, `FixedClock`), timezone conversions, DST-aware day ranges; `new Date()` banned by lint outside tests |
+| `@space/database`          | server only         | Prisma schema, migrations, repositories; ownership-scoped, paginated, idempotent                                                         |
+| `@space/auth`              | server only         | Sessions, Google sign-in, AEAD-encrypted OAuth token storage, onboarding writes, E2E route, rate limiting                                |
+| `@space/calendar`          | server only         | Google OAuth consent flows, token refresh, the sync engine, event normalisation                                                          |
+| `@space/engine`            | server / isomorphic | Pure deterministic scheduling: priority scoring, conflict resolution, deadline engine, workload enforcement, rescheduling                |
+| `@space/planning`          | server only         | Plan-my-day service, day-state reader, snapshot loader, outbox persistence                                                               |
+| `@space/autonomy`          | server only         | Staleness detection, calendar drift classification, at-risk deadline escalation, trigger graph, notification batching                    |
+| `@space/notifications`     | server only         | Deterministic delivery policies, templates, the notification sweep, email provider abstraction (AgentMail)                               |
+| `@space/metrics`           | server only         | Zero-dependency Prometheus registry with duration histograms and worker-job counters                                                     |
+| `@space/typescript-config` | tooling             | `base`, `node`, `react-library` and `nextjs` tsconfig bases                                                                              |
+| `@space/eslint-config`     | tooling             | Flat ESLint configs: `base` (type-aware), `node`, `react`, `next`                                                                        |
+| `@space/ui`                | React               | Component foundation: `cn()` (clsx + tailwind-merge), `Button` primitive with `cva` variants, `EmptyState`, `Skeleton`, `Switch` etc.    |
 
 ### How secrets are kept out of the browser
 
@@ -282,40 +298,38 @@ pnpm dev
 - Web: <http://localhost:3000>
 - Worker health: <http://localhost:8080/healthz>
 
+To run database migrations locally (requires a PostgreSQL instance, e.g. `docker compose up -d postgres`):
+
+```bash
+pnpm db:migrate:deploy
+pnpm db:seed
+```
+
 ---
 
 ## Environment variables
 
-`.env.example` at the repository root is the **complete reference**, including variables reserved for
-later stages. Each application has its own example file, and each reads only its own:
+Each application has its own `.env.example` file. The exhaustive contract — all variables, their
+required/optional status, defaults, and runtime scope — is documented in
+**[docs/stage-12-production-deployment.md §2](docs/stage-12-production-deployment.md)**. The
+essentials:
 
 | File                       | Copy to               | Read by         |
 | -------------------------- | --------------------- | --------------- |
 | `apps/web/.env.example`    | `apps/web/.env.local` | `@space/web`    |
 | `apps/worker/.env.example` | `apps/worker/.env`    | `@space/worker` |
 
-**Required today:** `DATABASE_URL` (for migrations, seed and integration tests), `AUTH_SECRET` (for
-session signing), and `GOOGLE_CLIENT_ID` / `GOOGLE_CLIENT_SECRET` (for sign-in) — all read from
-`apps/web/.env.local`. Both applications still boot with no environment file at all (the web app
-renders the public landing page, the worker returns health status), but any authenticated behaviour
-requires the auth secrets.
+**Required for auth** (set on web): `AUTH_SECRET` (>= 32 chars), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OAUTH_ENCRYPTION_KEY` (`<keyId>:<base64>`).
 
-| Variable              | Runtime | Default                 | Purpose                                            |
-| --------------------- | ------- | ----------------------- | -------------------------------------------------- |
-| `NODE_ENV`            | both    | `development`           | Runtime mode                                       |
-| `APP_URL`             | web     | `http://localhost:3000` | Public origin, used for metadata and absolute URLs |
-| `WORKER_NAME`         | worker  | `space-worker`          | Process identity in logs                           |
-| `LOG_LEVEL`           | worker  | `info`                  | `trace` … `fatal`                                  |
-| `HEALTH_PORT`         | worker  | `8080`                  | Health endpoint port                               |
-| `SHUTDOWN_TIMEOUT_MS` | worker  | `10000`                 | Grace period before a forced exit                  |
+**Required for persistence** (set on both): `DATABASE_URL` (pooled, port 6543 for Supabase), `DIRECT_DATABASE_URL` (direct, port 5432 — migrations only).
 
-| `DATABASE_URL` | both | — | Database connection string; required for the database commands and the auth session store |
-| `AUTH_SECRET` | both | — | Session signing secret; >= 32 characters; required for auth to function |
-| `GOOGLE_CLIENT_ID` | both | — | Google OAuth client id |
-| `GOOGLE_CLIENT_SECRET` | both | — | Google OAuth client secret |
-| `OAUTH_ENCRYPTION_KEY` | both | — | Per-deployment AEAD key for credential storage (`keyId:base64`) |
+**Required for queues** (set on both): `REDIS_URL` (TLS `rediss://` for Upstash).
 
-Rules: never commit a real env file (`.gitignore` excludes everything except `.env.example`), and
+**Optional on worker**: `AGENTMAIL_API_KEY` / `AGENTMAIL_BASE_URL` (without them outbound email is
+recorded as `provider-not-configured`), `WORKER_NAME`, `LOG_LEVEL`, `HEALTH_PORT`, retention
+windows, sync and review intervals — all with safe defaults.
+
+Rules: never commit a real env file (`.gitignore` excludes everything except `*.env.example`), and
 never put a credential behind `NEXT_PUBLIC_` — that prefix inlines the value into the browser bundle.
 
 ---
@@ -363,28 +377,28 @@ when `DATABASE_URL` is set, and then reports it through `/readyz`.
 
 ## Development commands
 
-| Command                                | Description                                        |
-| -------------------------------------- | -------------------------------------------------- |
-| `pnpm dev`                             | Run every application in watch mode                |
-| `pnpm dev:web`                         | Next.js only, on port 3000                         |
-| `pnpm dev:worker`                      | Worker only, with `tsx watch`                      |
-| `pnpm build`                           | Build every application                            |
-| `pnpm build:web` / `pnpm build:worker` | Build one application                              |
-| `pnpm start:worker`                    | Run the compiled worker (`node dist/index.js`)     |
-| `pnpm lint`                            | ESLint across every workspace                      |
-| `pnpm typecheck`                       | `tsc --noEmit` across every workspace              |
-| `pnpm test`                            | Vitest unit tests                                  |
-| `pnpm test:watch`                      | Vitest in watch mode                               |
-| `pnpm test:e2e`                        | Playwright end-to-end tests (requires a build)     |
-| `pnpm test:integration`                | Database integration tests (requires PostgreSQL)   |
-| `pnpm db:generate`                     | Regenerate the Prisma client                       |
-| `pnpm db:migrate`                      | Create and apply a migration (development only)    |
-| `pnpm db:migrate:deploy`               | Apply pending migrations (the production command)  |
-| `pnpm db:migrate:status`               | Compare the database against the migration history |
-| `pnpm db:seed`                         | Load deterministic development data                |
-| `pnpm db:studio`                       | Browse the data                                    |
-| `pnpm format` / `pnpm format:check`    | Prettier write / verify                            |
-| `pnpm clean`                           | Remove build output                                |
+| Command                                | Description                                                |
+| -------------------------------------- | ---------------------------------------------------------- |
+| `pnpm dev`                             | Run every application in watch mode                        |
+| `pnpm dev:web`                         | Next.js only, on port 3000                                 |
+| `pnpm dev:worker`                      | Worker only, with `tsx watch`                              |
+| `pnpm build`                           | Build every application                                    |
+| `pnpm build:web` / `pnpm build:worker` | Build one application                                      |
+| `pnpm start:worker`                    | Run the compiled worker (`node apps/worker/dist/index.js`) |
+| `pnpm lint`                            | ESLint across every workspace                              |
+| `pnpm typecheck`                       | `tsc --noEmit` across every workspace                      |
+| `pnpm test`                            | Vitest unit tests                                          |
+| `pnpm test:watch`                      | Vitest in watch mode                                       |
+| `pnpm test:e2e`                        | Playwright end-to-end tests (requires a build)             |
+| `pnpm test:integration`                | Database integration tests (requires PostgreSQL)           |
+| `pnpm db:generate`                     | Regenerate the Prisma client                               |
+| `pnpm db:migrate`                      | Create and apply a migration (development only)            |
+| `pnpm db:migrate:deploy`               | Apply pending migrations (the production command)          |
+| `pnpm db:migrate:status`               | Compare the database against the migration history         |
+| `pnpm db:seed`                         | Load deterministic development data                        |
+| `pnpm db:studio`                       | Browse the data                                            |
+| `pnpm format` / `pnpm format:check`    | Prettier write / verify                                    |
+| `pnpm clean`                           | Remove build output                                        |
 
 All tasks run through Turborepo, so repeated runs hit the local cache.
 
@@ -394,27 +408,34 @@ All tasks run through Turborepo, so repeated runs hit the local cache.
 
 **Unit — Vitest.** Each package owns its configuration and runs in isolation.
 
-| Suite               | Covers                                                                                                                                                             |
-| ------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
-| `@space/validation` | RFC 3339 parsing (including impossible calendar dates), IANA timezone checks, boundary errors that never echo their input                                          |
-| `@space/auth`       | AEAD encrypt/decrypt round-trip, key rotation, `assertE2EAuthAllowed` guard, `e2eSecretMatches` constant-time semantics, onboarding writes, rate limiter windowing |
-| `@space/config`     | Defaults, coercion, rejection of bad values, frozen snapshots, no client-key drift, and the auth env schema refusing `E2E_AUTH_ENABLED` in production              |
-| `@space/logger`     | Structured output, credential redaction, level filtering, static bindings                                                                                          |
-| `@space/worker`     | Shutdown ordering, idempotent shutdown, failure isolation, timeout behaviour, signal handling, health endpoint responses                                           |
-| `@space/ui`         | `cn()` conflict resolution and `Button` accessibility/variants (Testing Library + jsdom)                                                                           |
-| `@space/time`       | Clock injection, calendar dates across timezones, DST gaps and repeated hours, `date` column encoding                                                              |
-| `@space/database`   | Enum parity with the Prisma schema, cursor pagination, error translation, health probe, seed determinism                                                           |
+| Suite                  | Covers                                                                                                                                                                   |
+| ---------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `@space/validation`    | RFC 3339 parsing (including impossible calendar dates), IANA timezone checks, boundary errors that never echo their input                                                |
+| `@space/auth`          | AEAD encrypt/decrypt round-trip, key rotation, `assertE2EAuthAllowed` guard, `e2eSecretMatches` constant-time semantics, onboarding writes, rate limiter windowing       |
+| `@space/config`        | Defaults, coercion, rejection of bad values, frozen snapshots, no client-key drift, auth env schema refusing `E2E_AUTH_ENABLED` in production                            |
+| `@space/logger`        | Structured output, credential redaction, level filtering, static bindings                                                                                                |
+| `@space/worker`        | Shutdown ordering, idempotent shutdown, failure isolation, timeout behaviour, signal handling, health endpoint responses                                                 |
+| `@space/ui`            | `cn()` conflict resolution and `Button` accessibility/variants (Testing Library + jsdom)                                                                                 |
+| `@space/time`          | Clock injection, calendar dates across timezones, DST gaps and repeated hours, `date` column encoding                                                                    |
+| `@space/database`      | Enum parity with the Prisma schema, cursor pagination, error translation, health probe, seed determinism, retention pruning, integration suites (CI)                     |
+| `@space/engine`        | Availability, conflict resolution, deadlines, dependencies, priority scoring, workload enforcement, planner integration, rescheduling, explanation generation, validator |
+| `@space/planning`      | Day-state reader, snapshot loader, plan service, HTTP serialisation                                                                                                      |
+| `@space/autonomy`      | Staleness detection, diff classification, impact scoring, trigger graph, feedback loop, notification batching, policy enforcement                                        |
+| `@space/notifications` | Delivery policies, templates, outbox consumption, reminders, sweep, email provider mock, service wiring                                                                  |
+| `@space/metrics`       | Zero-dependency Prometheus registry, duration histograms, worker-job counters                                                                                            |
 
 **End-to-end — Playwright.** Suites run against a **production build**, because a page that only
 works under `next dev` is not evidence of anything. The landing page suite asserts the page renders,
-the anchored sections exist, the security headers are sent, the header shows "Sign in" for anonymous
-visitors, and unknown routes return a real 404. The auth suite exercises the deterministic
-end-to-end route (`/api/auth/e2e`), verifies that `/login`, `/onboarding` and `/dashboard` gates
-behave correctly, and signs the test user out — all against a real database, never a stub.
+the anchored sections exist, the security headers are sent, and unknown routes return a real 404.
+
+**Integration — PostgreSQL.** The CI integration job spins up a clean `postgres:17` service,
+applies every migration via `prisma migrate deploy`, runs the seed, then executes the database
+integration and retention suites against the real database.
 
 ```bash
 pnpm test                          # unit
 pnpm build:web && pnpm test:e2e    # end-to-end
+pnpm test:integration              # integration (requires PostgreSQL)
 ```
 
 ---
@@ -424,10 +445,11 @@ pnpm build:web && pnpm test:e2e    # end-to-end
 | Application   | Tool                     | Output                                          |
 | ------------- | ------------------------ | ----------------------------------------------- |
 | `apps/web`    | `next build` (Turbopack) | `.next/` — statically prerendered landing page  |
-| `apps/worker` | `tsup` (esbuild)         | `dist/index.js` — single ESM bundle for Node 22 |
+| `apps/worker` | `tsup` (esbuild)         | `dist/index.js` — single ESM bundle for Node 24 |
 
 The worker bundle inlines the internal `@space/*` packages and leaves third-party dependencies
-external, so the deployment target installs them from the lockfile.
+(Prisma driver adapter, BullMQ, ioredis, googleapis, google-auth-library) external, so the
+deployment target installs them from the lockfile.
 
 **CI** (`.github/workflows/ci.yml`) runs on every push and pull request to `main`:
 
@@ -439,19 +461,37 @@ external, so the deployment target installs them from the lockfile.
 
 ## Deployment model
 
-Nothing is deployed at this stage. The intended model:
+The platform is fully specified and verified locally (format, lint, typecheck, test, build, boot
+smoke, health probe). The exact steps to deploy are in **[docs/stage-12-production-deployment.md](docs/stage-12-production-deployment.md)**.
 
-| Component       | Platform                    | Notes                                                                                      |
-| --------------- | --------------------------- | ------------------------------------------------------------------------------------------ |
-| Web application | **Vercel**                  | Root directory `apps/web`; build `pnpm build:web`                                          |
-| Worker          | **Railway**                 | Persistent process; build `pnpm build:worker`, start `pnpm start:worker`; check `/healthz` |
-| Database        | **Supabase PostgreSQL**     | Pooled `DATABASE_URL` for apps, `DIRECT_DATABASE_URL` for migrations                       |
-| Queue / cache   | **Upstash Redis**           | BullMQ backing store                                                                       |
-| Repository & CI | **GitHub / GitHub Actions** |                                                                                            |
-| Errors & traces | **Sentry / OpenTelemetry**  | Later stage                                                                                |
+| Component       | Platform                    | Config                     | Notes                                                                                                          |
+| --------------- | --------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------- |
+| Web application | **Vercel**                  | `apps/web/vercel.json`     | Root directory `apps/web`; build `pnpm build:web`                                                              |
+| Worker          | **Railway**                 | `railway.json`             | Nixpacks; start `node apps/worker/dist/index.js`; `HEALTH_PORT=$PORT`                                          |
+| Database        | **Supabase PostgreSQL**     | docs §3                    | Pooled `DATABASE_URL` (port 6543) for apps; `DIRECT_DATABASE_URL` (port 5432) for migrations — never `db push` |
+| Queue / cache   | **Upstash Redis**           | docs §4                    | BullMQ backing store; `rediss://` TLS; `noeviction` policy                                                     |
+| Repository & CI | **GitHub / GitHub Actions** | `.github/workflows/ci.yml` | verify → integration → e2e; no deploy step (by design)                                                         |
+| Email delivery  | **AgentMail**               | docs §6                    | `AGENTMAIL_API_KEY`; absent ⇒ `provider-not-configured`, never faked                                           |
+| Error tracking  | **Sentry / OpenTelemetry**  | —                          | Reserved for a later stage                                                                                     |
 
 The worker must never be deployed as a serverless function: it is designed to hold long-lived
 connections and to drain in-flight work on shutdown.
+
+---
+
+## Production readiness
+
+The Stage 12 deployment audit ([docs/stage-12-production-deployment.md](docs/stage-12-production-deployment.md)) contains:
+
+- **Full environment contracts** for both runtimes (§2) — every variable, required/optional/status/defaults
+- **Deployment configuration audit** (§7–8) — vercel.json and railway.json, including the Phase 11 boot-blocking bug fix
+- **Health endpoint verification** (§10) — real builds probed: worker 200/200/200, web 200/503 (honest degradation)
+- **Runtime behaviour verification** (§11) — format/lint/typecheck/test/build all green, migration inventory, secrets audit
+- **Deployment runbooks** (§19) — deploy web, deploy worker, migrate production, rotate encryption key
+- **Recovery drills** (§20) — instance crash, queue outage, DB outage, email outage
+- **A–Z summary report** (§A) — every surface labelled with its exact verification status
+
+Phases that require live credentials (calendar sync, email delivery, autonomous loop against real data) are explicitly labelled `NOT VERIFIED — requires production credentials/environment`. Nothing is presented as deployed until it actually is.
 
 ---
 
@@ -466,17 +506,6 @@ The repository is structured so that a new module is additive, never a restructu
    automatically.
 4. Declare it in the consumer's `dependencies` as `workspace:*`. For the web application, add it to
    `transpilePackages` in `next.config.ts`.
-
-Planned modules and where they will sit:
-
-| Package                                    | Stage | Purpose                                         |
-| ------------------------------------------ | ----- | ----------------------------------------------- |
-| `@space/auth`                              | 03    | Sessions and Google OAuth                       |
-| `@space/space-engine`                      | 04    | Pure, deterministic engines over `@space/types` |
-| `@space/queue`                             | 04    | BullMQ queues and job contracts                 |
-| `@space/calendar`                          | 04    | Google Calendar, isolated behind an interface   |
-| `@space/notifications`, `@space/agentmail` | 05    | Delivery channels                               |
-| `@space/telemetry`                         | later | Sentry and OpenTelemetry wiring                 |
 
 ---
 
