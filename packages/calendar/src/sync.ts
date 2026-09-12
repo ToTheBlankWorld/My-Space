@@ -1,8 +1,9 @@
-import { audit, type Database } from '@space/database';
+import { audit, calendar as calendarRepository, type Database } from '@space/database';
 import type { Logger } from '@space/logger';
 import type { Clock } from '@space/time';
 
-import type { CalendarProviderAdapter, SyncResult } from './types';
+import { recordCalendarConnectionEvent } from './audit-events';
+import type { CalendarProviderAdapter, ProviderCalendar, SyncResult } from './types';
 
 /**
  * The calendar synchronization engine.
@@ -241,6 +242,63 @@ export const syncCalendar = async (
 };
 
 /**
+ * Discovers and mirrors the calendars for a connection that has none.
+ *
+ * Self-heal path: the web callback's initial discovery is best-effort, so a
+ * transient Google failure can leave a `CONNECTED` connection with an empty
+ * mirror — and the periodic sync has nothing to act on. This runs discovery
+ * through the injected provider and upserts every result with the existing
+ * calendar repository (idempotent on `(connectionId, externalId)`, preserving
+ * the repository's default `isSelected` behavior).
+ *
+ * A failure is surfaced through the typed calendar-connection event log as a
+ * `CALENDAR_SYNC_FAILED` entry (`reason: 'calendar-discovery-failed'`) and
+ * rethrown, so the caller's retry classification (and the BullMQ backoff on the
+ * worker) owns recovery. A later successful pass clears the residual error
+ * state exactly as a normal sync does.
+ */
+export const discoverCalendarsForConnection = async (
+  ctx: SyncContext,
+  input: { userId: string; connectionId: string; accessToken: string },
+): Promise<number> => {
+  const { db, logger, provider } = ctx;
+  const { userId, connectionId, accessToken } = input;
+
+  let discovered: ProviderCalendar[];
+  try {
+    discovered = await provider.listCalendars(accessToken);
+  } catch (error) {
+    await recordCalendarConnectionEvent(db, userId, {
+      eventType: 'CALENDAR_SYNC_FAILED',
+      connectionId,
+      payload: {
+        reason: 'calendar-discovery-failed',
+        message: error instanceof Error ? error.message.slice(0, 500) : 'Calendar discovery failed',
+      },
+    });
+    logger.warn(
+      { connectionId, err: error },
+      'calendar discovery failed; the next sync will retry it',
+    );
+    throw error;
+  }
+
+  for (const providerCalendar of discovered) {
+    await calendarRepository.upsertCalendar(db, userId, {
+      connectionId,
+      externalId: providerCalendar.externalId,
+      name: providerCalendar.name,
+      timeZone: providerCalendar.timeZone,
+      description: providerCalendar.description ?? null,
+      isPrimary: providerCalendar.isPrimary,
+      color: providerCalendar.color ?? null,
+    });
+  }
+
+  return discovered.length;
+};
+
+/**
  * Synchronizes all selected calendars for a connection.
  *
  * Each calendar is synced independently: a failure on one does not prevent the
@@ -252,6 +310,19 @@ export const syncAllCalendars = async (
 ): Promise<{ calendarId: string; result: SyncResult }[]> => {
   const { db } = ctx;
   const { userId, connectionId, accessToken, fullSync } = input;
+
+  // Self-heal: an existing `CONNECTED` connection whose callback discovery
+  // failed has zero mirrored calendars, so the sync loop below would have
+  // nothing to iterate. Discover now (this records a typed failure and rethrows
+  // when discovery itself fails). Connections that already have mirrors —
+  // selected or not — are untouched, preserving `isSelected` semantics.
+  const mirrorCount = await db.calendar.count({
+    where: { connectionId, userId },
+  });
+
+  if (mirrorCount === 0) {
+    await discoverCalendarsForConnection(ctx, { userId, connectionId, accessToken });
+  }
 
   const calendars = await db.calendar.findMany({
     where: { connectionId, userId, isSelected: true },

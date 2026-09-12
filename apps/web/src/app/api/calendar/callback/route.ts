@@ -148,7 +148,10 @@ export const GET = async (request: NextRequest) => {
 
   // Discover and mirror the user's calendars now, so the dashboard can show
   // them without waiting for the first sync. Best-effort: a transient Google
-  // failure must not undo a successful connection.
+  // failure must not undo a successful connection. The failure is still
+  // observable — recorded through the typed calendar-connection event log — and
+  // the periodic sync worker retries discovery on its next pass (see
+  // `discoverCalendarsForConnection`).
   try {
     const provider = new GoogleCalendarProvider();
     const providerCalendars = await provider.listCalendars(grant.accessToken);
@@ -178,6 +181,14 @@ export const GET = async (request: NextRequest) => {
     }
   } catch (error) {
     logger.warn({ err: error }, 'calendar mirror discovery failed');
+    await recordCalendarConnectionEvent(db, user.user.id, {
+      eventType: 'CALENDAR_SYNC_FAILED',
+      connectionId: connected.id,
+      payload: {
+        reason: 'calendar-discovery-failed',
+        message: error instanceof Error ? error.message.slice(0, 500) : 'Calendar discovery failed',
+      },
+    });
   }
 
   // Kick off the first sync now, so events are visible without waiting for the

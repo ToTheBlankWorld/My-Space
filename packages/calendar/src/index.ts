@@ -25,7 +25,7 @@ export type {
 } from './oauth';
 export { encryptCalendarTokens, decryptCalendarTokens } from './token-store';
 export type { EncryptedCalendarTokens, DecryptedCalendarTokens } from './token-store';
-export { syncCalendar, syncAllCalendars } from './sync';
+export { syncCalendar, syncAllCalendars, discoverCalendarsForConnection } from './sync';
 export { recordCalendarConnectionEvent } from './audit-events';
 export { resolveConnectionAccessToken } from './resolve-access-token';
 export type { ResolveAccessTokenDeps, ResolveAccessTokenResult } from './resolve-access-token';
