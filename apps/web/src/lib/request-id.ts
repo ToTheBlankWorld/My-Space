@@ -1,5 +1,5 @@
 /**
- * One id per request, so logs across middleware, route handlers, jobs and
+ * One id per request, so logs across the proxy, route handlers, jobs and
  * provider calls can be stitched back together.
  *
  * Purely functional and framework-free so it can be unit-tested: the id is

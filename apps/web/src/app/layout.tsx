@@ -7,6 +7,14 @@ import { site } from '@/lib/site';
 
 import './globals.css';
 
+/**
+ * The production Content-Security-Policy (set in the proxy) carries a fresh
+ * nonce per request so Next.js's inline scripts can run without
+ * `'unsafe-inline'`. Nonces can only be applied during server-side rendering,
+ * not to build-time static HTML, so every route must render dynamically.
+ */
+export const dynamic = 'force-dynamic';
+
 export const metadata: Metadata = {
   metadataBase: new URL(serverEnv.APP_URL),
   title: {

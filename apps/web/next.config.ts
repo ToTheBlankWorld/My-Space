@@ -16,29 +16,16 @@ const securityHeaders = [
 ];
 
 /**
- * A Content-Security-Policy ahead of the browser defaults: no remote scripts,
- * no inline script execution, no framing, nothing loaded across the origin
- * boundary except the two things the app already allows.
+ * The Content-Security-Policy intentionally does not live here.
  *
- * This is production-only on purpose. Next's development server evaluates
- * scripts for hot-reload and would trip the `'self'`-only script policy and
- * every refresh in dev; shipping the strict policy only where it is intended
- * to be enforced keeps development usable without weakening production.
+ * It carries a per-request nonce for `script-src` (so Next.js can run its
+ * inline bootstrap/RSC scripts under a policy with no `'unsafe-inline'`) and
+ * it lets the Google OAuth form-result redirect reach `accounts.google.com`.
+ * Both values are only known per request, and `headers()` is static, so the
+ * proxy builds and applies the policy at edge time. This is still
+ * production-only on purpose: Next's development server evaluates scripts for
+ * hot-reload and would trip a strict script policy on every refresh.
  */
-const strictCsp = [
-  "default-src 'self'",
-  "script-src 'self'",
-  "style-src 'self' 'unsafe-inline'",
-  "img-src 'self' data: https://lh3.googleusercontent.com https://*.googleusercontent.com",
-  "font-src 'self'",
-  "connect-src 'self'",
-  "object-src 'none'",
-  "base-uri 'none'",
-  "form-action 'self'",
-  "frame-ancestors 'none'",
-  'upgrade-insecure-requests',
-].join('; ');
-
 const isProduction = process.env.NODE_ENV === 'production';
 
 const nextConfig: NextConfig = {
@@ -70,7 +57,6 @@ const nextConfig: NextConfig = {
         headers: isProduction
           ? [
               ...securityHeaders,
-              { key: 'Content-Security-Policy', value: strictCsp },
               {
                 key: 'Strict-Transport-Security',
                 value: 'max-age=31536000; includeSubDomains',
