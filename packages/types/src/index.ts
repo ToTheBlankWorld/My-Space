@@ -67,5 +67,5 @@ export type {
   EventType,
   AggregateType,
 } from './domain';
-export { QUEUE_PREFIX, QUEUE_NAMES } from './queueing';
+export { QUEUE_PREFIX, QUEUE_NAMES, deliveryJobId, autoSyncJobId } from './queueing';
 export type { QueueName } from './queueing';

@@ -1,7 +1,7 @@
 import 'server-only';
 
 import { createLogger, type Logger } from '@space/logger';
-import { QUEUE_NAMES, QUEUE_PREFIX } from '@space/types';
+import { QUEUE_NAMES, QUEUE_PREFIX, autoSyncJobId } from '@space/types';
 import { Queue } from 'bullmq';
 import { Redis } from 'ioredis';
 
@@ -116,7 +116,7 @@ export const scheduleCalendarAutoSync = async (payload: {
     getLogger().info({ connectionId: payload.connectionId }, 'auto-sync scheduled');
     await queue.add('auto-sync', payload, {
       repeat: { every: intervalMinutes * 60_000 },
-      jobId: `auto-sync:${payload.connectionId}`,
+      jobId: autoSyncJobId(payload.connectionId),
     });
     return true;
   } catch (error) {

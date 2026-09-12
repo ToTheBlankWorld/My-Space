@@ -1,5 +1,6 @@
 import type { Database } from '@space/database';
 import type { Logger } from '@space/logger';
+import { autoSyncJobId } from '@space/types';
 
 import type { QueueDefinitions } from './queues';
 
@@ -46,7 +47,7 @@ export const scheduleAutoSyncs = async ({
         repeat: {
           every: intervalMinutes * 60_000,
         },
-        jobId: `auto-sync:${connection.id}`,
+        jobId: autoSyncJobId(connection.id),
       },
     );
   }

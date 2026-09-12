@@ -8,7 +8,7 @@ import {
   type EmailProvider,
 } from '@space/notifications';
 import type { Clock } from '@space/time';
-import { QUEUE_NAMES, QUEUE_PREFIX } from '@space/types';
+import { QUEUE_NAMES, QUEUE_PREFIX, deliveryJobId } from '@space/types';
 import { Worker, type Job } from 'bullmq';
 import type { Redis } from 'ioredis';
 
@@ -78,7 +78,7 @@ export const createNotificationWorker = ({
                 notificationId: payload.notificationId,
                 emailLogId: payload.emailLogId,
               },
-              { jobId: `delivery:${payload.emailLogId}` },
+              { jobId: deliveryJobId(payload.emailLogId) },
             );
           },
         });
