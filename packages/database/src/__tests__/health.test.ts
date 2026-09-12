@@ -43,6 +43,26 @@ describe('checkDatabaseHealth', () => {
     vi.useRealTimers();
   });
 
+  it('honors a configured timeout longer than a fixed 2s cap', async () => {
+    // Regression guard: production round trips occasionally take 2–2.5s through
+    // the pooled connection. A query answering in ~3s must be reported as ok
+    // when the caller configures 5s, instead of being cut off at a 2000ms cap.
+    vi.useFakeTimers();
+
+    let resolveQuery: (value: unknown) => void = () => undefined;
+    const pending = checkDatabaseHealth(
+      stubClient(() => new Promise<unknown>((resolve) => (resolveQuery = resolve))),
+      { timeoutMs: 5_000 },
+    );
+
+    await vi.advanceTimersByTimeAsync(3_000);
+    resolveQuery([{ '?column?': 1 }]);
+
+    await expect(pending).resolves.toMatchObject({ status: 'ok' });
+
+    vi.useRealTimers();
+  });
+
   it('never returns anything an unauthenticated caller could exploit', async () => {
     const health = await checkDatabaseHealth(
       stubClient(() =>

@@ -74,7 +74,11 @@ const bootstrap = async (): Promise<void> => {
   let database: DatabaseConnection | undefined;
 
   if (env.DATABASE_URL) {
-    database = connectDatabase({ connectionString: env.DATABASE_URL, logger });
+    database = connectDatabase({
+      connectionString: env.DATABASE_URL,
+      logger,
+      healthTimeoutMs: env.DATABASE_HEALTH_TIMEOUT_MS,
+    });
     probes.push(database.probe);
     shutdown.register({ name: 'database', dispose: database.dispose });
     logger.info('database pool opened');

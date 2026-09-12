@@ -23,13 +23,13 @@ export interface ConnectDatabaseOptions {
   connectionString: string;
   logger: Logger;
   /** How long a readiness probe may wait before reporting the database down. */
-  healthTimeoutMs?: number;
+  healthTimeoutMs: number;
 }
 
 export const connectDatabase = ({
   connectionString,
   logger,
-  healthTimeoutMs = 2_000,
+  healthTimeoutMs,
 }: ConnectDatabaseOptions): DatabaseConnection => {
   const client = createDatabaseClient({ connectionString, logger });
 

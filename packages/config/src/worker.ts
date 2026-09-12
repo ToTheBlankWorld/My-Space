@@ -35,6 +35,16 @@ export const workerEnvSchema = z.object({
   DATABASE_URL: nonEmptyStringSchema.optional(),
 
   /**
+   * Milliseconds a database readiness probe may wait before declaring the
+   * database unreachable.
+   *
+   * Defaults to 5,000: observed production round trips occasionally take
+   * 2–2.5s through the pooled connection, so the previous 2s cap produced
+   * false "degraded" reports during otherwise healthy rolling deploys.
+   */
+  DATABASE_HEALTH_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(5_000),
+
+  /**
    * Redis connection for BullMQ.
    *
    * Required for queue consumers. When absent the worker boots without queues.

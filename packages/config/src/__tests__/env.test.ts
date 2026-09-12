@@ -14,6 +14,7 @@ describe('worker environment', () => {
       LOG_LEVEL: 'info',
       HEALTH_PORT: 8080,
       SHUTDOWN_TIMEOUT_MS: 10_000,
+      DATABASE_HEALTH_TIMEOUT_MS: 5_000,
       CALENDAR_SYNC_INTERVAL_MINUTES: 15,
       PLANNING_MAX_TASKS_PER_PLAN: 100,
       APP_URL: 'http://localhost:3000',
@@ -32,10 +33,20 @@ describe('worker environment', () => {
   });
 
   it('coerces numeric variables, which arrive as strings', () => {
-    const env = loadWorkerEnv({ HEALTH_PORT: '9000', SHUTDOWN_TIMEOUT_MS: '2500' });
+    const env = loadWorkerEnv({
+      HEALTH_PORT: '9000',
+      SHUTDOWN_TIMEOUT_MS: '2500',
+      DATABASE_HEALTH_TIMEOUT_MS: '7500',
+    });
 
     expect(env.HEALTH_PORT).toBe(9000);
     expect(env.SHUTDOWN_TIMEOUT_MS).toBe(2500);
+    expect(env.DATABASE_HEALTH_TIMEOUT_MS).toBe(7500);
+  });
+
+  it('rejects an out-of-range database health timeout', () => {
+    expect(() => loadWorkerEnv({ DATABASE_HEALTH_TIMEOUT_MS: '40' })).toThrow(EnvironmentError);
+    expect(() => loadWorkerEnv({ DATABASE_HEALTH_TIMEOUT_MS: '60000' })).toThrow(EnvironmentError);
   });
 
   it('rejects an unknown log level and names the offending key', () => {

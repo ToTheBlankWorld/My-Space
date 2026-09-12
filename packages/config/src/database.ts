@@ -49,7 +49,7 @@ export const databaseEnvSchema = z.object({
   DATABASE_LOG_QUERIES: booleanFromEnvSchema.default(false),
 
   /** Milliseconds a health probe may wait before declaring the database unreachable. */
-  DATABASE_HEALTH_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(2_000),
+  DATABASE_HEALTH_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(5_000),
 });
 
 export type DatabaseEnv = z.output<typeof databaseEnvSchema>;

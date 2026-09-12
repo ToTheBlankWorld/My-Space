@@ -25,7 +25,7 @@ export interface DatabaseHealthOptions {
   logger?: Logger;
 }
 
-const DEFAULT_TIMEOUT_MS = 2_000;
+const DEFAULT_TIMEOUT_MS = 5_000;
 
 /**
  * Runs the cheapest possible round trip.
