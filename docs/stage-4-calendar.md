@@ -436,3 +436,13 @@ deploy` in CI — not yet exercised against a live dev database.
 6. No `docs/plans/` directory exists in this repository; the only planning
    artifact is this report, alongside `docs/authentication.md` and
    `docs/database.md`.
+
+---
+
+> **Migration note (Redis removal).** This document is a historical stage
+> record: it describes the queue/scheduling design as built at the time, on
+> Redis + BullMQ. The production architecture has since replaced BullMQ with
+> a PostgreSQL durable job queue (`background_jobs` + `job_schedules`,
+> `FOR UPDATE SKIP LOCKED` claiming, expiring leases, dedupe/coalescing, a
+> fleet-safe schedule ticker). See `README.md` for the current architecture
+> and `docs/redis-cutover-runbook.md` for the cutover history.

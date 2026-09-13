@@ -156,6 +156,18 @@ export const EMAIL_STATUSES = ['QUEUED', 'SENT', 'DELIVERED', 'BOUNCED', 'FAILED
 export type EmailStatus = (typeof EMAIL_STATUSES)[number];
 
 /**
+ * Lifecycle of a durable background job row.
+ *
+ * Transitions: PENDING → RUNNING (a worker claims it), then COMPLETED, DEAD
+ * (retry budget exhausted or a permanent failure), or back to PENDING (a
+ * failed-with-retries job or a reaper recovering an expired lease). CANCELLED
+ * is the terminal state for a PENDING job withdrawn before it ran. A RUNNING
+ * job can never be moved by anything but its own worker or the lease reaper.
+ */
+export const JOB_STATUSES = ['PENDING', 'RUNNING', 'COMPLETED', 'DEAD', 'CANCELLED'] as const;
+export type JobStatus = (typeof JOB_STATUSES)[number];
+
+/**
  * Decisions the deterministic Space Engine records in its audit trail.
  *
  * Every value names a concrete, rule-driven operation. Nothing here records

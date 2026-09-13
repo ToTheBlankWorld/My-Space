@@ -437,3 +437,13 @@ All workspace checks pass:
 7. **No weekend awareness in trigger phase.** The trigger-graph scan does
    not check `allowWeekendScheduling`. The engine's own `enforceWorkload`
    module handles weekend constraints during the pass.
+
+---
+
+> **Migration note (Redis removal).** This document is a historical stage
+> record: it describes the queue/scheduling design as built at the time, on
+> Redis + BullMQ. The production architecture has since replaced BullMQ with
+> a PostgreSQL durable job queue (`background_jobs` + `job_schedules`,
+> `FOR UPDATE SKIP LOCKED` claiming, expiring leases, dedupe/coalescing, a
+> fleet-safe schedule ticker). See `README.md` for the current architecture
+> and `docs/redis-cutover-runbook.md` for the cutover history.

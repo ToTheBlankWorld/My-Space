@@ -1,16 +1,10 @@
 /**
- * BullMQ queue namespace and names.
+ * Queue names for the PostgreSQL durable job queue.
  *
- * Both the worker (consumers) and the web app (producers) import these
- * constants so every queue is identified by the same `name` + `prefix`
- * pair. BullMQ concatenates them into the qualified key namespace
- * `<prefix>:<name>` — e.g. `space:calendar-sync`.
- *
- * Colon characters in `name` are forbidden by BullMQ 5.81+; the namespace
- * lives in the `prefix` option instead.
+ * Both the worker (consumer) and the web app (producer) import these
+ * constants so every queue is identified by the same name, and every
+ * `BackgroundJob.queue` / `JobSchedule.queue` value comes from one place.
  */
-
-export const QUEUE_PREFIX = 'space';
 
 export const QUEUE_NAMES = {
   calendarSync: 'calendar-sync',
@@ -24,19 +18,35 @@ export const QUEUE_NAMES = {
 export type QueueName = (typeof QUEUE_NAMES)[keyof typeof QUEUE_NAMES];
 
 /**
- * Deterministic, BullMQ-5.81-safe job id for a single notification delivery.
- *
- * Custom job ids must not contain `:` unless they carry exactly three
- * colon-separated segments (BullMQ's legacy repeatable-job form); a plain
- * `delivery:<emailLogId>` failed validation with "Custom Id cannot contain :".
- * The colon-free form keeps de-duplication per email log while satisfying
- * BullMQ's validation.
+ * Deterministic dedupe key for a single notification delivery: one pending
+ * delivery job per email log row.
  */
 export const deliveryJobId = (emailLogId: string): string => `delivery-${emailLogId}`;
 
+// ---------------------------------------------------------------------------
+// PostgreSQL queue identities (Redis removal migration)
+// ---------------------------------------------------------------------------
+
 /**
- * Deterministic, BullMQ-5.81-safe job id for one connection's periodic
- * calendar auto-sync. Colon-free so BullMQ accepts it while BullMQ still
- * de-duplicates the schedule per connection.
+ * The `JobSchedule.scheduleKey` for one connection's periodic auto-sync.
+ *
+ * The single canonical identity for automatic synchronization: the web
+ * application upserts the schedule row under this key when a connection is
+ * established, and the worker's PostgreSQL scheduler claims due schedules by
+ * the same key. The unique `scheduleKey` constraint is what prevents the web
+ * and the worker from ever creating two independent auto-sync schedules.
+ * (Identical to the BullMQ repeatable jobId, so a pre-migration deployment's
+ * identities carry over conceptually.)
  */
-export const autoSyncJobId = (connectionId: string): string => `auto-sync-${connectionId}`;
+export const autoSyncScheduleKey = (connectionId: string): string => `auto-sync-${connectionId}`;
+
+/**
+ * The `BackgroundJob.dedupeKey` for one manual sync request.
+ *
+ * Preserves the logical identity of the BullMQ jobId
+ * `manual:{connectionId}:{calendarId|all}`: one pending/running manual sync
+ * per connection+target, while a completed (or dead) one can always be
+ * requested again via the enqueue's re-arm semantics.
+ */
+export const manualSyncDedupeKey = (connectionId: string, calendarId?: string): string =>
+  `manual:${connectionId}:${calendarId ?? 'all'}`;

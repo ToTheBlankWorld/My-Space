@@ -16,7 +16,7 @@
  *
  * ## Boundaries
  *
- * - Nothing here talks to a broker or provider business data: BullMQ lives in
+ * - Nothing here talks to a broker: the durable queue lives in the worker and
  *   the worker; credentials live in worker config. `SweepDeps.enqueueDelivery`
  *   is the only seam.
  * - Policy never uses a clock or the database; the sweep owns both.

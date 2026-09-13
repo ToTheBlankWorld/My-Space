@@ -59,6 +59,8 @@ export * as delivery from './repositories/delivery';
 export * as reminders from './repositories/reminders';
 export * as audit from './repositories/audit';
 export * as retention from './repositories/retention';
+export * as jobs from './repositories/jobs';
+export * as syncLease from './repositories/sync-lease';
 
 // Prisma's generated namespace, for callers that need a filter type or an enum
 // value. Re-exported from one place so no consumer reaches into `src/generated`.
@@ -82,4 +84,6 @@ export type {
   AgentAction,
   EventLog,
   ProductivitySnapshot,
+  BackgroundJob,
+  JobSchedule,
 } from './generated/prisma/client';

@@ -461,3 +461,13 @@ service job for migrations + integration; a Playwright job for e2e).
    convention (`apps/web/src/middleware.ts`) is deprecated in favor of a
    `proxy` file. The build is green and the behavior identical; migrating the
    file to the new convention is a mechanical follow-up.
+
+---
+
+> **Migration note (Redis removal).** This document is a historical stage
+> record: it describes the queue/scheduling design as built at the time, on
+> Redis + BullMQ. The production architecture has since replaced BullMQ with
+> a PostgreSQL durable job queue (`background_jobs` + `job_schedules`,
+> `FOR UPDATE SKIP LOCKED` claiming, expiring leases, dedupe/coalescing, a
+> fleet-safe schedule ticker). See `README.md` for the current architecture
+> and `docs/redis-cutover-runbook.md` for the cutover history.

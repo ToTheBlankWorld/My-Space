@@ -7,7 +7,7 @@ This repository is at **Stage 12 — Production Deployment & Live Integration**.
 (prioritisation, scheduling, conflict resolution, workload enforcement), Google Calendar
 synchronisation, a notification and email delivery layer (AgentMail), and an autonomous
 feedback loop (drift detection, staleness, deadline escalation, automated reschedule proposals)
-are all implemented and tested. Deploy configs for Vercel, Railway, Supabase and Upstash are
+are all implemented and tested. Deploy configs for Vercel, Railway and Supabase are
 committed and verified locally. Every claim below carries an explicit verification label
 (`VERIFIED LOCALLY`, `VERIFIED IN CI`, etc.); nothing is presented as deployed until it
 actually is.
@@ -72,8 +72,8 @@ every decision traces back to the rule that produced it.
 2. **The web application and the worker are independently deployable.** Neither imports the other.
 3. **Background work never depends on serverless execution.** Long-running and retryable work belongs
    to the worker process, not to a request handler.
-4. **No in-memory timers for production scheduling.** Durable scheduling is handled by BullMQ on
-   Redis.
+4. **No in-memory timers for production scheduling.** Durable scheduling is handled by the
+   PostgreSQL job queue (`job_schedules` + `background_jobs`) with a fleet-safe ticker.
 5. **Domain logic lives outside React components.** Components render; packages decide.
 6. **External integrations are isolated behind dedicated packages**, so a provider can be replaced
    without touching the domain.
@@ -118,8 +118,7 @@ flowchart TB
     end
 
     subgraph data["Managed infrastructure"]
-        PG[("Supabase<br/>PostgreSQL")]
-        REDIS[("Upstash Redis<br/>BullMQ")]
+        PG[("Supabase PostgreSQL<br/>data + background_jobs + job_schedules")]
     end
 
     subgraph external["External integrations"]
@@ -131,8 +130,7 @@ flowchart TB
     WEB --> DB
     WORKER --> DB
     DB --> PG
-    WEB -.-> REDIS
-    WORKER -.-> REDIS
+    WEB --> DB
     WORKER --> GCAL
     WORKER --> MAIL
 
@@ -222,15 +220,21 @@ Server API routes: `/api/auth/*` (better-auth), `/api/plan` (day planner), `/api
 A long-lived Node.js process with **no dependency on the Next.js runtime**. Today it:
 
 - boots and validates its environment (`@space/config/worker`)
-- opens a database pool when `DATABASE_URL` is set, and a Redis pool when `REDIS_URL` is set
-- creates **five BullMQ queues** (`space:*`) and registers six consumers:
-  - `planning-completed` — persists plan writes and enqueues notifications
-  - `calendar-sync` — syncs connected Google Calendars per auto-sync schedule
-  - `notification` — delivers outbound email via AgentMail
-  - `maintenance` — retention prunes, expired session cleanup, event tombstone purging
-  - `autonomy-review` — drift detection, staleness, deadline escalation, reschedule proposals
-- runs a **deterministic scheduler** with idempotent repeatable jobs (`space:auto-sync:*`,
-  `space:autonomy-review`, `space:notification-sweep`, `space:maintenance`)
+- opens a database pool when `DATABASE_URL` is set (required — the worker cannot run without
+  persistence)
+- runs the **PostgreSQL durable job runtime**: five processor families on per-queue concurrency
+  lanes, claiming jobs with `FOR UPDATE SKIP LOCKED` under an expiring lease:
+  - `calendar-sync` — syncs connected Google Calendars (manual + scheduled)
+  - `planning` — deterministic autonomous replans under the planVersion CAS
+  - `notifications` — daily cycles, reminders, outbox consumption, AgentMail delivery
+  - `autonomy-review` — drift detection, staleness, deadline escalation, coalesced replans
+  - `maintenance` — retention prunes, expired session cleanup, tombstone and job-row purging
+- registers **repeatable schedules** (`job_schedules`: `auto-sync-{connectionId}`,
+  `space:autonomy-review`, `space:notification-sweep`, `space:maintenance`) idempotently at boot
+  and ticks due ones into jobs fleet-safely
+- recovers crashed workers by lease expiry (a reaper returns timed-out jobs to the queue), applies
+  exponential backoff, deduplicates via `dedupeKey`, and dead-letters exhausted jobs
+- paces third-party APIs in-process (single-worker deployment by design)
 - exposes `GET /healthz`, `GET /readyz` and `GET /metrics` (Prometheus text exposition) for
   deployment-platform monitoring
 - shuts down gracefully: on `SIGINT`/`SIGTERM` it stops advertising readiness, drains in-flight
@@ -322,8 +326,6 @@ essentials:
 **Required for auth** (set on web): `AUTH_SECRET` (>= 32 chars), `GOOGLE_CLIENT_ID`, `GOOGLE_CLIENT_SECRET`, `OAUTH_ENCRYPTION_KEY` (`<keyId>:<base64>`).
 
 **Required for persistence** (set on both): `DATABASE_URL` (pooled, port 6543 for Supabase), `DIRECT_DATABASE_URL` (direct, port 5432 — migrations only).
-
-**Required for queues** (set on both): `REDIS_URL` (TLS `rediss://` for Upstash).
 
 **Optional on worker**: `AGENTMAIL_API_KEY` / `AGENTMAIL_BASE_URL` (without them outbound email is
 recorded as `provider-not-configured`), `WORKER_NAME`, `LOG_LEVEL`, `HEALTH_PORT`, retention
@@ -448,7 +450,7 @@ pnpm test:integration              # integration (requires PostgreSQL)
 | `apps/worker` | `tsup` (esbuild)         | `dist/index.js` — single ESM bundle for Node 24 |
 
 The worker bundle inlines the internal `@space/*` packages and leaves third-party dependencies
-(Prisma driver adapter, BullMQ, ioredis, googleapis, google-auth-library) external, so the
+(Prisma driver adapter, googleapis, google-auth-library) external, so the
 deployment target installs them from the lockfile.
 
 **CI** (`.github/workflows/ci.yml`) runs on every push and pull request to `main`:
@@ -468,8 +470,7 @@ smoke, health probe). The exact steps to deploy are in **[docs/stage-12-producti
 | --------------- | --------------------------- | -------------------------- | -------------------------------------------------------------------------------------------------------------- |
 | Web application | **Vercel**                  | `apps/web/vercel.json`     | Root directory `apps/web`; build `pnpm build:web`                                                              |
 | Worker          | **Railway**                 | `railway.json`             | Nixpacks; start `node apps/worker/dist/index.js`; `HEALTH_PORT=$PORT`                                          |
-| Database        | **Supabase PostgreSQL**     | docs §3                    | Pooled `DATABASE_URL` (port 6543) for apps; `DIRECT_DATABASE_URL` (port 5432) for migrations — never `db push` |
-| Queue / cache   | **Upstash Redis**           | docs §4                    | BullMQ backing store; `rediss://` TLS; `noeviction` policy                                                     |
+| Database        | **Supabase PostgreSQL**     | docs §3                    | Pooled `DATABASE_URL` (port 6543) for apps; `DIRECT_DATABASE_URL` (port 5432) for migrations — never `db push`. Also hosts the durable job queue (`background_jobs`, `job_schedules`) |
 | Repository & CI | **GitHub / GitHub Actions** | `.github/workflows/ci.yml` | verify → integration → e2e; no deploy step (by design)                                                         |
 | Email delivery  | **AgentMail**               | docs §6                    | `AGENTMAIL_API_KEY`; absent ⇒ `provider-not-configured`, never faked                                           |
 | Error tracking  | **Sentry / OpenTelemetry**  | —                          | Reserved for a later stage                                                                                     |

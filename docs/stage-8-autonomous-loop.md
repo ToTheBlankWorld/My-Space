@@ -354,3 +354,13 @@ All workspace checks pass:
 5. **No weekend awareness.** The tomorrow phase does not check
    `allowWeekendScheduling` before enqueuing a replan. The engine's own
    `enforceWorkload` module handles weekend constraints during the pass.
+
+---
+
+> **Migration note (Redis removal).** This document is a historical stage
+> record: it describes the queue/scheduling design as built at the time, on
+> Redis + BullMQ. The production architecture has since replaced BullMQ with
+> a PostgreSQL durable job queue (`background_jobs` + `job_schedules`,
+> `FOR UPDATE SKIP LOCKED` claiming, expiring leases, dedupe/coalescing, a
+> fleet-safe schedule ticker). See `README.md` for the current architecture
+> and `docs/redis-cutover-runbook.md` for the cutover history.

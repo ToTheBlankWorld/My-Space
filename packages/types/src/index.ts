@@ -37,6 +37,7 @@ export {
   NOTIFICATION_TYPES,
   NOTIFICATION_PRIORITIES,
   EMAIL_STATUSES,
+  JOB_STATUSES,
   AGENT_ACTION_TYPES,
   AGENT_ACTION_OUTCOMES,
   EVENT_TYPES,
@@ -62,10 +63,11 @@ export type {
   NotificationType,
   NotificationPriority,
   EmailStatus,
+  JobStatus,
   AgentActionType,
   AgentActionOutcome,
   EventType,
   AggregateType,
 } from './domain';
-export { QUEUE_PREFIX, QUEUE_NAMES, deliveryJobId, autoSyncJobId } from './queueing';
+export { QUEUE_NAMES, deliveryJobId, autoSyncScheduleKey, manualSyncDedupeKey } from './queueing';
 export type { QueueName } from './queueing';

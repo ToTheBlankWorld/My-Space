@@ -698,3 +698,13 @@ exist in this environment.
 
 The running evidence accumulator was consolidated into §A during Phase 21.
 The per-phase evidence remains in §§3–20 above.
+
+---
+
+> **Migration note (Redis removal).** This document is a historical stage
+> record: it describes the queue/scheduling design as built at the time, on
+> Redis + BullMQ. The production architecture has since replaced BullMQ with
+> a PostgreSQL durable job queue (`background_jobs` + `job_schedules`,
+> `FOR UPDATE SKIP LOCKED` claiming, expiring leases, dedupe/coalescing, a
+> fleet-safe schedule ticker). See `README.md` for the current architecture
+> and `docs/redis-cutover-runbook.md` for the cutover history.

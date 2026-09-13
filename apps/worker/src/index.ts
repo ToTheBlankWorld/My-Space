@@ -5,31 +5,17 @@ import { createLogger } from '@space/logger';
 import { createMetrics } from '@space/metrics';
 import { createEmailProvider } from '@space/notifications';
 import { SystemClock } from '@space/time';
-import type { Redis } from 'ioredis';
+import { randomUUID } from 'node:crypto';
 
 import { connectDatabase, type DatabaseConnection } from './database';
 import { createHealthServer, type ReadinessProbe, type RuntimeState } from './health/server';
 import { installProcessSignalHandlers } from './lifecycle/process-signals';
 import { ShutdownController } from './lifecycle/shutdown';
-import {
-  attachJobMetrics,
-  createJobMetrics,
-  createQueues,
-  createRedisConnection,
-  createRedisHealth,
-  type QueueDefinitions,
-} from './queues';
-import { createCalendarSyncWorker } from './queues/calendar-sync-worker';
-import { createMaintenanceWorker } from './queues/maintenance-worker';
-import { createNotificationWorker } from './queues/notification-worker';
-import { createPlanningWorker } from './queues/planning-worker';
-import {
-  scheduleAutoSyncs,
-  scheduleNotificationSweep,
-  scheduleAutonomyReview,
-  scheduleMaintenance,
-} from './scheduler';
-import { createAutonomyReviewWorker } from './queues/autonomy-review-worker';
+import { createPgHandlers } from './queues/pg/handlers';
+import { createPgQueueHealth, type PgQueueRuntimeHealthState } from './queues/pg/health';
+import { createPgQueueMetrics } from './queues/pg/metrics';
+import { createPgScheduleTicker, registerPgSchedules } from './queues/pg/scheduler';
+import { createPgQueueRuntime } from './queues/pg/runtime';
 
 /**
  * Worker entry point.
@@ -39,8 +25,15 @@ import { createAutonomyReviewWorker } from './queues/autonomy-review-worker';
  * never subject to serverless execution limits.
  *
  * The process contract is configuration, logging, health endpoints and graceful
- * shutdown; Stage 4 adds Redis/BullMQ queue consumers that own background
- * execution of calendar sync, token refresh, and maintenance tasks.
+ * shutdown. Background work runs entirely on the PostgreSQL durable job queue
+ * (`background_jobs` + `job_schedules` — see `@space/database`'s jobs
+ * repository): workers claim jobs with `FOR UPDATE SKIP LOCKED` under a lease,
+ * retries/backoff/dedupe/coalescing are row-level, and repeatable schedules
+ * are claimed fleet-safely by the ticker. There is no Redis, no broker, and no
+ * second queue runtime.
+ *
+ * Rate pacing is process-local (see `queues/pg/pacer.ts`): the deployment
+ * assumes a single Railway worker replica.
  */
 const bootstrap = async (): Promise<void> => {
   const env = loadWorkerEnv();
@@ -55,8 +48,11 @@ const bootstrap = async (): Promise<void> => {
 
   // Process-lifetime metrics; exposed at /metrics on the health server.
   const metrics = createMetrics();
-  // Shared job metric families for every queue worker in this process.
-  const jobMetrics = createJobMetrics(metrics);
+  // Created once: the maintenance pass reports its pruned-row counts here.
+  const retentionPrunedRows = metrics.gauge({
+    name: 'space_retention_pruned_rows',
+    help: 'Rows pruned by the latest maintenance pass',
+  });
 
   const shutdown = new ShutdownController({ logger, timeoutMs: env.SHUTDOWN_TIMEOUT_MS });
 
@@ -69,8 +65,10 @@ const bootstrap = async (): Promise<void> => {
     },
   });
 
-  // Database: optional at bootstrap, required for queue consumers.
   const probes: ReadinessProbe[] = [];
+
+  // Database: required. Without persistence there is no queue to run and no
+  // state to serve, so the worker is not viable.
   let database: DatabaseConnection | undefined;
 
   if (env.DATABASE_URL) {
@@ -83,36 +81,14 @@ const bootstrap = async (): Promise<void> => {
     shutdown.register({ name: 'database', dispose: database.dispose });
     logger.info('database pool opened');
   } else {
-    logger.warn('DATABASE_URL is not set; the worker is running without persistence');
+    logger.error('DATABASE_URL is not set; the worker cannot run without persistence');
   }
 
-  // Redis + BullMQ: optional at bootstrap, required for queue consumers.
-  let redisConnection: Redis | undefined;
-  let queues: QueueDefinitions | undefined;
-  let calendarSyncWorker: ReturnType<typeof createCalendarSyncWorker> | undefined;
-  let maintenanceWorker: ReturnType<typeof createMaintenanceWorker> | undefined;
-  let planningWorker: ReturnType<typeof createPlanningWorker> | undefined;
-  let notificationWorker: ReturnType<typeof createNotificationWorker> | undefined;
-  let autonomyReviewWorker: ReturnType<typeof createAutonomyReviewWorker> | undefined;
+  if (database) {
+    const clock = new SystemClock();
 
-  if (env.REDIS_URL) {
-    redisConnection = createRedisConnection(env.REDIS_URL);
-    await redisConnection.connect();
-    shutdown.register({
-      name: 'redis',
-      dispose: async () => {
-        await redisConnection?.quit();
-      },
-    });
-
-    const redisHealth = createRedisHealth(redisConnection);
-    probes.push(redisHealth.probe);
-
-    queues = createQueues(redisConnection);
-
-    // Start queue consumers. The calendar sync worker additionally needs the
-    // database, a token keyring and Google OAuth credentials; without them it
-    // must not start, so it is only created when all are present and configured.
+    // Google OAuth + keyring: required by the calendar sync pipeline; without
+    // them that family is disabled (logged, never fatal to the rest).
     const google: GoogleClientCredentials | undefined =
       env.GOOGLE_CLIENT_ID && env.GOOGLE_CLIENT_SECRET
         ? { clientId: env.GOOGLE_CLIENT_ID, clientSecret: env.GOOGLE_CLIENT_SECRET }
@@ -124,175 +100,92 @@ const bootstrap = async (): Promise<void> => {
         })
       : undefined;
 
-    if (database && google && keyring) {
-      calendarSyncWorker = createCalendarSyncWorker({
-        logger,
-        connection: redisConnection,
-        db: database.client,
-        clock: new SystemClock(),
-        keyring,
-        google,
-      });
-
-      await scheduleAutoSyncs({
-        db: database.client,
-        queues,
-        intervalMinutes: env.CALENDAR_SYNC_INTERVAL_MINUTES,
-        logger,
-      });
-      attachJobMetrics(calendarSyncWorker, jobMetrics, 'space:calendar-sync');
-      logger.info('calendar sync worker started');
-    } else {
-      logger.warn(
-        {
-          database: database !== undefined,
-          googleConfigured: google !== undefined,
-          keyringConfigured: keyring !== undefined,
-        },
-        'calendar sync worker disabled: database, google or keyring configuration missing',
-      );
-    }
-
-    if (database) {
-      maintenanceWorker = createMaintenanceWorker({
-        logger,
-        connection: redisConnection,
-        db: database.client,
-        clock: new SystemClock(),
-        metrics,
-        retention: {
-          eventLogDays: env.EVENT_LOG_RETENTION_DAYS,
-          agentActionDays: env.AGENT_ACTION_RETENTION_DAYS,
-          notificationDays: env.NOTIFICATION_RETENTION_DAYS,
-          emailLogDays: env.EMAIL_LOG_RETENTION_DAYS,
-          sessionDays: env.SESSION_RETENTION_DAYS,
-          verificationDays: env.VERIFICATION_RETENTION_DAYS,
-          calendarEventTombstoneDays: env.CALENDAR_EVENT_RETENTION_DAYS,
-        },
-      });
-
-      await scheduleMaintenance({
-        queues,
-        intervalMinutes: env.MAINTENANCE_INTERVAL_MINUTES,
-        logger,
-      });
-      attachJobMetrics(maintenanceWorker, jobMetrics, 'space:maintenance');
-
-      logger.info('maintenance worker started');
-    } else {
-      logger.warn('maintenance worker disabled: database configuration missing');
-    }
-
-    // The planning worker needs only the database and a clock; it has no OAuth
-    // or provider dependencies, so it starts whenever persistence is present.
-    if (database) {
-      planningWorker = createPlanningWorker({
-        logger,
-        connection: redisConnection,
-        db: database.client,
-        clock: new SystemClock(),
-        maxTasksPerPlan: env.PLANNING_MAX_TASKS_PER_PLAN,
-      });
-      attachJobMetrics(planningWorker, jobMetrics, 'space:planning');
-      logger.info('planning worker started');
-    } else {
-      logger.warn('planning worker disabled: database configuration missing');
-    }
-
-    // The notification worker needs the database, a clock, the web base URL for
-    // clickable content and an email provider for outbound delivery. The
-    // provider is optional: when AgentMail isn't configured the sweep still
-    // runs (cycles, reminders, outbox) but prepared emails stay PENDING rather
-    // than being faked. The sweep schedule is one repeatable job, so a rolling
-    // fleet only ever holds a single schedule.
-    if (database) {
-      const emailProvider = createEmailProvider({
-        baseUrl: env.AGENTMAIL_BASE_URL,
-        token: env.AGENTMAIL_API_KEY ?? '',
-      });
-
-      notificationWorker = createNotificationWorker({
-        logger,
-        connection: redisConnection,
-        db: database.client,
-        clock: new SystemClock(),
-        appUrl: env.APP_URL,
-        emailProvider,
-        queues,
-      });
-
-      await scheduleNotificationSweep({
-        queues,
-        intervalMinutes: env.NOTIFICATION_SWEEP_INTERVAL_MINUTES,
-        logger,
-      });
-      attachJobMetrics(notificationWorker, jobMetrics, 'space:notifications');
-
-      logger.info(
-        { emailProviderConfigured: emailProvider !== null },
-        'notification worker started',
-      );
-    } else {
-      logger.warn('notification worker disabled: database configuration missing');
-    }
-
-    // The autonomy review worker needs the database, a clock and the planning
-    // queue. It runs on a fixed interval and never directly modifies tasks —
-    // it only classifies signals and delegates replans.
-    if (database) {
-      autonomyReviewWorker = createAutonomyReviewWorker({
-        logger,
-        connection: redisConnection,
-        db: database.client,
-        clock: new SystemClock(),
-        queues,
-        appUrl: env.APP_URL,
-      });
-
-      await scheduleAutonomyReview({
-        queues,
-        intervalMinutes: env.AUTONOMY_REVIEW_INTERVAL_MINUTES,
-        logger,
-      });
-      attachJobMetrics(autonomyReviewWorker, jobMetrics, 'space:autonomy-review');
-      logger.info('autonomy review worker started');
-    } else {
-      logger.warn('autonomy review worker disabled: database configuration missing');
-    }
-
-    shutdown.register({
-      name: 'bullmq-workers',
-      dispose: async () => {
-        await Promise.all([
-          calendarSyncWorker?.close(),
-          maintenanceWorker?.close(),
-          planningWorker?.close(),
-          notificationWorker?.close(),
-          autonomyReviewWorker?.close(),
-        ]);
-      },
+    // Email provider: null when AgentMail isn't configured — deliveries stay
+    // PENDING rather than being faked.
+    const emailProvider = createEmailProvider({
+      baseUrl: env.AGENTMAIL_BASE_URL,
+      token: env.AGENTMAIL_API_KEY ?? '',
     });
 
-    shutdown.register({
-      name: 'bullmq-queues',
-      dispose: async () => {
-        await Promise.all([
-          queues?.calendarSync.close(),
-          queues?.calendarRefresh.close(),
-          queues?.maintenance.close(),
-          queues?.planning.close(),
-          queues?.notifications.close(),
-          queues?.autonomyReview.close(),
-        ]);
+    // Processor registration: five families with their concurrency lanes.
+    const handlerSet = createPgHandlers({
+      db: database.client,
+      clock,
+      logger,
+      appUrl: env.APP_URL,
+      emailProvider,
+      maxTasksPerPlan: env.PLANNING_MAX_TASKS_PER_PLAN,
+      retention: {
+        eventLogDays: env.EVENT_LOG_RETENTION_DAYS,
+        agentActionDays: env.AGENT_ACTION_RETENTION_DAYS,
+        notificationDays: env.NOTIFICATION_RETENTION_DAYS,
+        emailLogDays: env.EMAIL_LOG_RETENTION_DAYS,
+        sessionDays: env.SESSION_RETENTION_DAYS,
+        verificationDays: env.VERIFICATION_RETENTION_DAYS,
+        calendarEventTombstoneDays: env.CALENDAR_EVENT_RETENTION_DAYS,
       },
+      prunedRows: retentionPrunedRows,
+      calendar: google && keyring ? { keyring, google } : undefined,
     });
 
-    logger.info('redis connected, bullmq queues started');
+    // PG schedules: repeatable work lives in `job_schedules`. Boot
+    // registration is an idempotent upsert (re-anchors the cadence, exactly
+    // like the fleet-wide scheduler it replaced) and prunes auto-sync
+    // schedules for connections that are no longer CONNECTED.
+    await registerPgSchedules({
+      db: database.client,
+      clock,
+      logger,
+      intervals: {
+        calendarSyncMinutes: env.CALENDAR_SYNC_INTERVAL_MINUTES,
+        notificationSweepMinutes: env.NOTIFICATION_SWEEP_INTERVAL_MINUTES,
+        autonomyReviewMinutes: env.AUTONOMY_REVIEW_INTERVAL_MINUTES,
+        maintenanceMinutes: env.MAINTENANCE_INTERVAL_MINUTES,
+      },
+      calendarConfigured: google !== undefined && keyring !== undefined,
+    });
+
+    // PG runtime: claim loop, lease reaper, queue-depth gauges.
+    const pgRuntime = createPgQueueRuntime({
+      db: database.client,
+      logger,
+      workerId: `${env.WORKER_NAME}-${randomUUID()}`,
+      classes: handlerSet.classes,
+      handlers: handlerSet.handlers,
+      metrics: createPgQueueMetrics(metrics),
+      clock,
+    });
+    pgRuntime.start();
+
+    // Schedule ticker: materialises due `job_schedules` rows into jobs.
+    const ticker = createPgScheduleTicker({ db: database.client, clock, logger });
+    ticker.start();
+
+    // Readiness: database reachable + the queue runtime actually started with
+    // handlers registered. A worker whose runtime failed to initialise must
+    // not advertise ready.
+    const pgQueueState: PgQueueRuntimeHealthState = {
+      started: true,
+      handlerClasses: handlerSet.classes.length,
+    };
+    probes.push(createPgQueueHealth(pgQueueState).probe);
+
+    shutdown.register({ name: 'pg-queue-ticker', dispose: () => ticker.stop() });
+    shutdown.register({ name: 'pg-queue-runtime', dispose: () => pgRuntime.stop() });
+
+    logger.info(
+      {
+        classes: handlerSet.classes,
+        calendarSyncHandlerEnabled: handlerSet.handlers['calendar-sync'] !== undefined,
+      },
+      'pg queue runtime started',
+    );
   } else {
-    logger.warn('REDIS_URL is not set; the worker is running without queue consumers');
+    logger.error('worker starting in degraded mode: no database, no queue runtime');
   }
 
-  // Health server: always started.
+  // Health server: always started (so the platform can observe a degraded
+  // worker instead of seeing nothing).
   const health = createHealthServer({
     logger,
     state,
@@ -305,15 +198,16 @@ const bootstrap = async (): Promise<void> => {
 
   installProcessSignalHandlers({ controller: shutdown, logger });
 
-  state.ready = true;
+  // Advertise ready only when the runtime can actually do its job. A worker
+  // without its database (or whose runtime failed to start) stays unready so
+  // the platform keeps it out of rotation instead of sending it work.
+  state.ready = database !== undefined;
 
   logger.info(
     {
       healthPort: env.HEALTH_PORT,
       shutdownTimeoutMs: env.SHUTDOWN_TIMEOUT_MS,
       databaseConnected: database !== undefined,
-      redisConnected: redisConnection !== undefined,
-      queuesEnabled: queues !== undefined,
       nodeVersion: process.version,
     },
     'worker ready',

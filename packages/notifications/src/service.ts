@@ -192,7 +192,7 @@ const failPermanently = async (
 
 /**
  * Final dead-letter for a notification whose delivery retries were exhausted.
- * Called by the worker on the last BullMQ attempt.
+ * Called by the worker when a delivery's final attempt fails.
  */
 export const finalizeFailedDelivery = async (
   deps: DeliveryAttemptDeps,

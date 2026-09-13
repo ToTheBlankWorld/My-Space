@@ -586,3 +586,12 @@ No High-severity findings.
    input those (Stage 7) consumers are designed to read.
 6. **README remains stale** at "Stage 03 — Identity" (unchanged since Stage 5;
    out of scope here).
+
+---
+
+> **Migration note (Redis removal).** This document is a historical stage
+> record: it describes the design as built at the time, when background work
+> ran on Redis + BullMQ. The production architecture has since replaced BullMQ
+> with a PostgreSQL durable job queue (`background_jobs` + `job_schedules`).
+> See `README.md` for the current architecture and
+> `docs/redis-cutover-runbook.md` for the cutover history.

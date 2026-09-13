@@ -6,7 +6,7 @@ import type { NormalizedCalendarEvent } from '../types';
  * Tests for retry classification logic.
  *
  * These tests verify that calendar errors are correctly classified as
- * retryable or non-retryable. The actual retry logic lives in the BullMQ
+ * retryable or non-retryable. The actual retry logic lives in the worker's
  * job configuration; these tests verify the error semantics.
  */
 

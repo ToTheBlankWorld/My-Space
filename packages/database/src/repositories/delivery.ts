@@ -116,11 +116,11 @@ export const listDueNotifications = async (
  *
  * Two classes:
  *  - **Pending and due** — the normal case, claimed by flipping to `QUEUED`;
- *  - **Queued but stale** — the crash-recovery case: a `QUEUED` row whose job
- *    was never (re)added after a worker died between the claim and `queue.add`.
- *    These are re-enqueued with the same deterministic `jobId`, which BullMQ
- *    dedupes if a job already exists, and the delivery worker's idempotency
- *    check makes a completed job a no-op.
+ *  - **Queued but stale** — the crash-recovery case: a `QUEUED` row whose
+ *    delivery job vanished after a worker died between the claim and the
+ *    enqueue. These are re-enqueued under the same deterministic dedupe key,
+ *    and the delivery worker's idempotency check makes a completed delivery a
+ *    no-op.
  */
 export const listDispatchableNotifications = async (
   db: Database,

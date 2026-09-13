@@ -171,6 +171,14 @@ enum EmailStatus {
   FAILED
 }
 
+enum JobStatus {
+  PENDING
+  RUNNING
+  COMPLETED
+  DEAD
+  CANCELLED
+}
+
 enum AgentActionType {
   SPACE_PLANNED
   TASK_SCHEDULED
@@ -771,6 +779,15 @@ model CalendarConnection {
   lastErrorAt          DateTime?        @db.Timestamptz(3)
   lastErrorMessage     String?
 
+  /// Mutual exclusion for the sync pipeline, replacing the Redis `SET NX EX`
+  /// lock. A sync acquires the lease before touching the connection's cursor:
+  /// `syncLeaseUntil` is the TTL (a crashed worker's lease expires on its own)
+  /// and `syncLeaseOwner` is a random per-attempt token, so a release only ever
+  /// clears a lease its own holder still owns. Both are maintained with
+  /// database-clock arithmetic in one atomic `UPDATE`.
+  syncLeaseUntil       DateTime?        @db.Timestamptz(3)
+  syncLeaseOwner       String?
+
   createdAt DateTime @default(now()) @db.Timestamptz(3)
   updatedAt DateTime @updatedAt @db.Timestamptz(3)
 
@@ -1065,6 +1082,126 @@ model OutboxCursor {
   updatedAt     DateTime @updatedAt @db.Timestamptz(3)
 
   @@map("outbox_cursors")
+}
+
+// -----------------------------------------------------------------------------
+// Background jobs
+// -----------------------------------------------------------------------------
+
+/// One unit of background work, durably queued.
+///
+/// This is the PostgreSQL replacement for BullMQ. The row *is* the job: a
+/// worker claims it with a single atomic `UPDATE … WHERE id IN (SELECT …
+/// FOR UPDATE SKIP LOCKED)`, which makes double-claiming impossible without
+/// any external lock service.
+///
+/// The fields map one-to-one onto the BullMQ semantics the system already
+/// relies on:
+///
+///   * `runAt`        — delayed execution and exponential-backoff retries.
+///   * `maxAttempts`  — the retry budget; the reaper and the failure path both
+///                      respect it.
+///   * `dedupeKey`    — deterministic job identity: insert-if-absent
+///                      deduplication and pending-job coalescing (the BullMQ
+///                      `jobId` behaviours). Null for jobs that must always
+///                      run; the unique index ignores nulls.
+///   * `lockedBy` /
+///     `lockExpiresAt` — the visibility timeout. A worker that dies mid-job
+///                      stops renewing the lease; the reaper returns the row
+///                      to PENDING once the lease lapses.
+///   * `priority`     — lower runs first within a queue.
+///
+/// Terminal rows (`COMPLETED`, `DEAD`, `CANCELLED`) are pruned by the
+/// maintenance job on the same retention basis as the audit tables.
+model BackgroundJob {
+  id String @id @default(cuid(2))
+
+  /// Queue class (`calendar-sync`, `planning`, …). Concurrency, rate pacing and
+  /// retention are configured per queue, not per job.
+  queue String
+  /// Job name within the queue (`auto-sync`, `delivery`, …).
+  name  String
+  /// The processor's input. Bounded, structured, never credentials.
+  payload Json @default("{}")
+
+  status      JobStatus @default(PENDING)
+  /// Lower runs first. Aligned with the domain's own ordering habits (urgency
+  /// before lateness), so `0` is the natural "urgent" value.
+  priority    Int       @default(100)
+
+  /// Earliest instant the job may be claimed. A past value is immediately due.
+  runAt         DateTime @db.Timestamptz(3)
+  maxAttempts   Int      @default(3)
+  /// Claim attempts so far. Incremented atomically by the claim, never by the
+  /// processor, so it is a trustworthy input to the retry decision.
+  attempts      Int      @default(0)
+  /// First backoff step in milliseconds; the delay doubles per attempt up to a
+  /// documented cap.
+  backoffBaseMs Int      @default(10000)
+  /// Normalised failure reason from the last attempt (or the reaper). Bounded,
+  /// never a stack trace or a credential.
+  lastError     String?
+
+  /// Deduplication / coalescing identity, unique across all jobs.
+  dedupeKey String? @unique
+
+  /// Lease ownership. Set by the claim, renewed by long processors, cleared on
+  /// completion, failure and reaping.
+  lockedBy      String?
+  lockExpiresAt DateTime? @db.Timestamptz(3)
+
+  createdAt  DateTime  @default(now()) @db.Timestamptz(3)
+  updatedAt  DateTime  @updatedAt @db.Timestamptz(3)
+  /// Set only on `COMPLETED` — never on `DEAD`, whose instant of death is
+  /// carried by `updatedAt` and whose story is told by `lastError`.
+  completedAt DateTime? @db.Timestamptz(3)
+
+  /// The claim: filter by status and due-ness, then order by priority.
+  /// (The reaper's and retention's partial indexes are SQL-managed in the
+  /// migration — `background_jobs_lockExpiresAt_idx` and
+  /// `background_jobs_terminal_updatedAt_idx` — following the
+  /// `calendar_events_deletedAt_idx` precedent.)
+  @@index([status, queue, runAt])
+  @@map("background_jobs")
+}
+
+/// A repeatable schedule: "enqueue this job every N seconds".
+///
+/// The PostgreSQL replacement for BullMQ repeatable jobs. One row per schedule
+/// under a unique `scheduleKey`, so re-registering the same schedule at worker
+/// boot is an idempotent upsert — the rolling-deploy behaviour the deterministic
+/// BullMQ job ids used to provide.
+///
+/// Ticking is fleet-safe by construction: a ticker claims due rows with
+/// `FOR UPDATE SKIP LOCKED` and advances `nextRunAt` in the same statement, so
+/// two tickers can never materialise the same occurrence twice. A run missed
+/// while no worker was up is skipped, not replayed — the next fire is one full
+/// interval from *now*, which keeps a lagging fleet from emitting a catch-up
+/// storm of sweeps and reviews.
+model JobSchedule {
+  id String @id @default(cuid(2))
+
+  /// Stable identity (`auto-sync-{connectionId}`, `space:notification-sweep`).
+  scheduleKey String @unique
+
+  /// The job each tick enqueues.
+  queue String
+  name  String
+  payload Json @default("{}")
+
+  /// Cadence in seconds.
+  everySeconds Int
+  /// Next occurrence. Claimed and advanced atomically by the ticker.
+  nextRunAt DateTime @db.Timestamptz(3)
+  /// When the last occurrence was claimed. Observability only.
+  lastRunAt DateTime? @db.Timestamptz(3)
+
+  createdAt DateTime @default(now()) @db.Timestamptz(3)
+  updatedAt DateTime @updatedAt @db.Timestamptz(3)
+
+  /// The ticker's only query.
+  @@index([nextRunAt])
+  @@map("job_schedules")
 }
 
 /// A daily roll-up used by future analytics.

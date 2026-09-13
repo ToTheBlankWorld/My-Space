@@ -404,3 +404,12 @@ Two environmental caveats, stated honestly:
 Stage 10 makes the product feel finished: it surfaces the engine's
 deterministic, explainable behaviour through a calm, accessible, motion-tight
 shell — and proves it with a green, formatted, buildable workspace.
+
+---
+
+> **Migration note (Redis removal).** This document is a historical stage
+> record: it describes the design as built at the time, when background work
+> ran on Redis + BullMQ. The production architecture has since replaced BullMQ
+> with a PostgreSQL durable job queue (`background_jobs` + `job_schedules`).
+> See `README.md` for the current architecture and
+> `docs/redis-cutover-runbook.md` for the cutover history.

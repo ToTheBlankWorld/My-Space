@@ -253,7 +253,7 @@ export const syncCalendar = async (
  *
  * A failure is surfaced through the typed calendar-connection event log as a
  * `CALENDAR_SYNC_FAILED` entry (`reason: 'calendar-discovery-failed'`) and
- * rethrown, so the caller's retry classification (and the BullMQ backoff on the
+ * rethrown, so the caller's retry classification (and the queue backoff on the
  * worker) owns recovery. A later successful pass clears the residual error
  * state exactly as a normal sync does.
  */

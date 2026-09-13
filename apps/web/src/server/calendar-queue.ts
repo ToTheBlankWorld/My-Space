@@ -1,129 +1,59 @@
 import 'server-only';
 
-import { createLogger, type Logger } from '@space/logger';
-import { QUEUE_NAMES, QUEUE_PREFIX, autoSyncJobId } from '@space/types';
-import { Queue } from 'bullmq';
-import { Redis } from 'ioredis';
+import type { Database } from '@space/database';
+
+import {
+  enqueueCalendarSync as enqueueCalendarSyncJob,
+  scheduleCalendarAutoSync as scheduleAutoSyncJob,
+  type ManualSyncInput,
+} from './calendar-sync-jobs';
+import { clock as webClock } from './clock';
 
 /**
- * Manual sync enqueue helper for the web application.
+ * Server-side calendar queue access for the web application.
  *
- * The heavy lifting lives in the worker process, which owns the queue consumers
- * and Redis connection. The web app only ever *adds* a job; when Redis is not
- * configured for the web (the default in local development), the route answers
- * 503 rather than pretending the work happened.
- */
-
-const QUEUE_NAME = QUEUE_NAMES.calendarSync;
-
-export interface CalendarSyncJobPayload {
-  userId: string;
-  connectionId: string;
-  calendarId?: string;
-  fullSync?: boolean;
-}
-
-const cache = globalThis as typeof globalThis & {
-  __spaceCalendarQueue?: Queue<CalendarSyncJobPayload>;
-  __spaceCalendarQueueLogger?: Logger;
-};
-
-const getLogger = (): Logger => {
-  cache.__spaceCalendarQueueLogger ??= createLogger({
-    name: 'space-web/calendar-sync',
-    level: process.env.NODE_ENV === 'production' ? 'info' : 'debug',
-  });
-  return cache.__spaceCalendarQueueLogger;
-};
-
-/** True when web-process Redis is configured and enqueueing is possible. */
-export const calendarQueueAvailable = (): boolean =>
-  Boolean(process.env.REDIS_URL) && Boolean(process.env.DATABASE_URL);
-
-const getQueue = (): Queue<CalendarSyncJobPayload> | null => {
-  if (!process.env.REDIS_URL) {
-    return null;
-  }
-
-  if (!cache.__spaceCalendarQueue) {
-    const connection = new Redis(process.env.REDIS_URL, {
-      maxRetriesPerRequest: null,
-      enableReadyCheck: false,
-      lazyConnect: true,
-    });
-    void connection.connect();
-
-    cache.__spaceCalendarQueue = new Queue<CalendarSyncJobPayload>(QUEUE_NAME, {
-      connection,
-      prefix: QUEUE_PREFIX,
-      defaultJobOptions: {
-        attempts: 3,
-        backoff: { type: 'exponential', delay: 5_000 },
-        removeOnComplete: { age: 3600 },
-        removeOnFail: { age: 86400 },
-      },
-    });
-  }
-
-  return cache.__spaceCalendarQueue;
-};
-
-/**
- * Enqueues a calendar sync job. Returns false when Redis is unavailable so the
- * caller can answer 503; the caller always verifies ownership first.
- */
-export const enqueueCalendarSync = async (payload: CalendarSyncJobPayload): Promise<boolean> => {
-  const queue = getQueue();
-
-  if (!queue) {
-    getLogger().warn({ connectionId: payload.connectionId }, 'sync requested but redis absent');
-    return false;
-  }
-
-  try {
-    getLogger().info({ connectionId: payload.connectionId }, 'manual sync enqueued');
-    await queue.add('calendar-sync', payload, {
-      jobId: `manual:${payload.connectionId}:${payload.calendarId ?? 'all'}`,
-    });
-    return true;
-  } catch (error) {
-    getLogger().error({ err: error, connectionId: payload.connectionId }, 'sync enqueue failed');
-    return false;
-  }
-};
-
-/**
- * Registers the periodic auto-sync for a connection.
+ * The heavy lifting lives in the worker process, which owns the job
+ * consumers. The web app only ever *writes* durable queue state — a
+ * `BackgroundJob` row for a manual sync, a `JobSchedule` row for the
+ * periodic auto-sync — so enqueueing requires nothing but the database the
+ * web app already has. Redis/BullMQ plays no part on this side any more.
  *
- * Idempotent: the deterministic `jobId` means BullMQ replaces an existing
- * repeatable job instead of stacking a second schedule. The worker ALSO
- * registers every CONNECTED connection at boot, so a connection that somehow
- * missed this call still gets periodic syncs after the next worker restart.
+ * This module is the composition root: it binds the validated job builders
+ * (`calendar-sync-jobs.ts`, unit-testable) to the web's database handle and
+ * the deployment's configuration.
  */
-export const scheduleCalendarAutoSync = async (payload: {
-  userId: string;
-  connectionId: string;
-}): Promise<boolean> => {
-  const queue = getQueue();
 
-  if (!queue) {
-    return false;
-  }
+export type { ManualSyncInput };
 
-  const intervalMinutes = Number(process.env.CALENDAR_SYNC_INTERVAL_MINUTES) || 15;
+/**
+ * True when the web can enqueue calendar work: it needs only the database.
+ * Kept as an explicit seam so callers can answer honestly if persistence is
+ * ever unconfigured (local dev without a database).
+ */
+export const calendarQueueAvailable = (): boolean => Boolean(process.env.DATABASE_URL);
 
-  try {
-    getLogger().info({ connectionId: payload.connectionId }, 'auto-sync scheduled');
-    await queue.add('auto-sync', payload, {
-      repeat: { every: intervalMinutes * 60_000 },
-      jobId: autoSyncJobId(payload.connectionId),
-    });
-    return true;
-  } catch (error) {
-    getLogger().error(
-      { err: error, connectionId: payload.connectionId },
-      'auto-sync scheduling failed',
-    );
-    return false;
-  }
+/** The deployment's auto-sync cadence, in minutes (minimum 1, default 15). */
+const autoSyncIntervalMinutes = (): number => {
+  const raw = Number(process.env.CALENDAR_SYNC_INTERVAL_MINUTES);
+  return Number.isFinite(raw) && raw >= 1 ? Math.floor(raw) : 15;
 };
+
+/**
+ * Enqueues one manual calendar sync (`BackgroundJob`). Returns true when the
+ * queue accepted the request; throws only on a database failure, which the
+ * routes surface as a 503 — "not available right now", never "done".
+ */
+export const enqueueCalendarSync = async (
+  db: Database,
+  input: ManualSyncInput,
+): Promise<boolean> => enqueueCalendarSyncJob(db, input, webClock);
+
+/**
+ * Registers (or re-anchors) the periodic auto-sync `JobSchedule` for a
+ * connection, using the deployment's configured interval. Idempotent by the
+ * shared schedule key; the worker is the sole materializer of due schedules.
+ */
+export const scheduleCalendarAutoSync = async (
+  db: Database,
+  input: { userId: string; connectionId: string },
+): Promise<boolean> => scheduleAutoSyncJob(db, input, webClock, autoSyncIntervalMinutes());

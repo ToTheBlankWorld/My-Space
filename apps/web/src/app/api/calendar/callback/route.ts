@@ -16,7 +16,6 @@ import {
   getGoogleOAuthConfig,
 } from '@/server/calendar';
 import {
-  calendarQueueAvailable,
   enqueueCalendarSync,
   scheduleCalendarAutoSync,
 } from '@/server/calendar-queue';
@@ -192,11 +191,24 @@ export const GET = async (request: NextRequest) => {
   }
 
   // Kick off the first sync now, so events are visible without waiting for the
-  // periodic job. Both enqueue and the repeatable registration are best-effort:
-  // they need Redis, which many local environments do not run.
-  if (calendarQueueAvailable()) {
-    await enqueueCalendarSync({ userId: user.user.id, connectionId: connected.id, fullSync: true });
-    await scheduleCalendarAutoSync({ userId: user.user.id, connectionId: connected.id });
+  // periodic job. The initial sync is a durable `BackgroundJob` row and the
+  // periodic auto-sync is a `JobSchedule` row — both plain PostgreSQL writes,
+  // so neither can be skipped for want of Redis. If the insert itself fails
+  // (database unreachable), the flow still completes — the connection is
+  // real — and the failure is logged; the worker's boot-time schedule
+  // registration plus the discovery retry path cover the recovery.
+  try {
+    await enqueueCalendarSync(db, {
+      userId: user.user.id,
+      connectionId: connected.id,
+      fullSync: true,
+    });
+    await scheduleCalendarAutoSync(db, { userId: user.user.id, connectionId: connected.id });
+  } catch (error) {
+    logger.error(
+      { err: error, connectionId: connected.id },
+      'initial calendar sync enqueue failed',
+    );
   }
 
   logger.info({ userId: user.user.id, providerAccountId }, 'google calendar connected');

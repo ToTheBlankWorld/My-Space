@@ -2,17 +2,20 @@ import { NextResponse } from 'next/server';
 
 import { readJsonBody } from '@/lib/http';
 import { requireApiUser, requireSameOrigin, spendRateLimit, withApi } from '@/server/api';
-import { enqueueCalendarSync, calendarQueueAvailable } from '@/server/calendar-queue';
-import { getCalendarDatabase } from '@/server/calendar';
+import { enqueueCalendarSync } from '@/server/calendar-queue';
+import { getCalendarDatabase, getCalendarLogger } from '@/server/calendar';
 
 /**
  * POST /api/calendar/sync
  *
  * Enqueues a calendar sync job for the authenticated user.
  *
- * This endpoint does NOT perform the sync synchronously. It verifies ownership,
- * enqueues a BullMQ job in the worker's queue, and returns accepted. The worker
- * performs the actual Google API call.
+ * This endpoint does NOT perform the sync synchronously. It verifies
+ * ownership, inserts a durable `BackgroundJob` row, and returns accepted; the
+ * worker performs the actual Google API call. Enqueueing needs only the
+ * database — no Redis — so this endpoint never degrades to "not configured".
+ * A database failure at insert time is the only 503, and it means exactly
+ * that: not queued.
  *
  * Request body:
  *   { connectionId: string, calendarId?: string, fullSync?: boolean }
@@ -21,6 +24,7 @@ export const POST = withApi(async (request: Request) => {
   const user = await requireApiUser();
   requireSameOrigin(request);
   spendRateLimit('calendarSync', user.user.id);
+  const logger = getCalendarLogger();
 
   const parsed = await readJsonBody(request);
   if (!parsed.ok) {
@@ -38,7 +42,8 @@ export const POST = withApi(async (request: Request) => {
   }
 
   // Ownership is the trust boundary: `connectionId` from the client is input,
-  // never authority. A row belonging to another user is "not found".
+  // never authority. A row belonging to another user is "not found" — and it
+  // is checked BEFORE anything is enqueued.
   const db = getCalendarDatabase();
   const connection = await db.calendarConnection.findFirst({
     where: {
@@ -59,23 +64,19 @@ export const POST = withApi(async (request: Request) => {
     );
   }
 
-  if (!calendarQueueAvailable()) {
-    return NextResponse.json(
-      { error: 'Background sync is not configured on this deployment.' },
-      { status: 503 },
-    );
-  }
-
-  const accepted = await enqueueCalendarSync({
+  const accepted = await enqueueCalendarSync(db, {
     userId: user.user.id,
     connectionId: connection.id,
     calendarId: body.calendarId,
     fullSync: body.fullSync ?? false,
+  }).catch((error: unknown) => {
+    logger.error({ err: error }, 'manual sync enqueue failed');
+    return false;
   });
 
   if (!accepted) {
     return NextResponse.json(
-      { error: 'Background sync is not available right now.' },
+      { error: 'The sync queue is not available right now; try again.' },
       { status: 503 },
     );
   }

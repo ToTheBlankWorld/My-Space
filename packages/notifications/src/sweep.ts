@@ -18,11 +18,12 @@ import type { NotificationDraft } from './types';
 /**
  * The notification sweep.
  *
- * Runs on a single deterministic interval (`space:notification-sweep`) and owns
- * four steps: (1) daily-cycle reconcile — seed today's briefs for users with
- * minutes configured; (2) reminder dispatch; (3) outbox consumption; (4) enqueue
- * due email deliveries. There are deliberately no per-user timers or thousands
- * of BullMQ repeatable jobs: one worker, bounded batches, idempotent keys.
+ * Runs on a single deterministic interval (the `space:notification-sweep`
+ * schedule) and owns four steps: (1) daily-cycle reconcile — seed today's
+ * briefs for users with minutes configured; (2) reminder dispatch; (3) outbox
+ * consumption; (4) enqueue due email deliveries. There are deliberately no
+ * per-user timers or thousands of scheduled jobs: one worker, bounded batches,
+ * idempotent keys.
  */
 
 export interface SweepDeps {

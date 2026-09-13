@@ -1,5 +1,9 @@
 import { LOG_LEVELS } from '@space/types';
-import { httpUrlSchema, nonEmptyStringSchema, portSchema } from '@space/validation';
+import {
+  httpUrlSchema,
+  nonEmptyStringSchema,
+  portSchema,
+} from '@space/validation';
 import { z } from 'zod';
 
 import { assertServerRuntime, defineEnv, type EnvSource } from './define-env';
@@ -11,9 +15,9 @@ const SCOPE = '@space/worker';
  * Environment for the standalone worker process.
  *
  * The worker is deployed independently (Railway) and must boot with no `.env`
- * file present, so every variable in this stage has a safe default. Connection
- * strings (`DATABASE_URL`, `REDIS_URL`) become required entries here when the
- * queue and persistence layers land.
+ * file present, so every variable here has a safe default. Background work
+ * runs entirely on PostgreSQL (durable job rows + schedules) — there is no
+ * Redis configuration.
  */
 export const workerEnvSchema = z.object({
   NODE_ENV: nodeEnvSchema,
@@ -43,13 +47,6 @@ export const workerEnvSchema = z.object({
    * false "degraded" reports during otherwise healthy rolling deploys.
    */
   DATABASE_HEALTH_TIMEOUT_MS: z.coerce.number().int().min(100).max(30_000).default(5_000),
-
-  /**
-   * Redis connection for BullMQ.
-   *
-   * Required for queue consumers. When absent the worker boots without queues.
-   */
-  REDIS_URL: nonEmptyStringSchema.optional(),
 
   /**
    * How often (in minutes) to run automatic calendar sync.

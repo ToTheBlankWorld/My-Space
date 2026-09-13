@@ -624,3 +624,12 @@ No High-severity findings.
    that consumer is designed to read.
 5. **Delegation resolution** (`CONFLICT_RESOLVED_BY_DELEGATION`) is a reserved
    reason code; the delegation engine itself is a later stage.
+
+---
+
+> **Migration note (Redis removal).** This document is a historical stage
+> record: it describes the design as built at the time, when background work
+> ran on Redis + BullMQ. The production architecture has since replaced BullMQ
+> with a PostgreSQL durable job queue (`background_jobs` + `job_schedules`).
+> See `README.md` for the current architecture and
+> `docs/redis-cutover-runbook.md` for the cutover history.

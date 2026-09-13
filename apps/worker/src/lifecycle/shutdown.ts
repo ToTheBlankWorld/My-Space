@@ -17,7 +17,7 @@ export interface ShutdownControllerOptions {
  * Runs registered teardown tasks exactly once, in reverse registration order.
  *
  * Reverse order matters: a task registered later may depend on one registered
- * earlier (a queue consumer needs its Redis connection), so the most dependent
+ * earlier (a queue consumer needs its database connection), so the most dependent
  * resource is always released first.
  *
  * The controller is deliberately independent of the process signal handlers so
